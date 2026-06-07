@@ -7,7 +7,6 @@ An automated desktop dashboard and Discord webhook system for tracking, analyzin
 ## 📖 Documentation
 
 - [Getting Started](./docs/setup.md): How to install and run the Tipping Bot.
-- [Architecture](./docs/architecture/PROMO_SYSTEM_IMPLEMENTATION.md): Deep dive into the promo generation engine.
 - [Model Benchmarks](./reports/model-benchmarks.md): Our standards for support and evaluation.
 - [AI Personas](./docs/agents/): View the logic and constraints used by our analysis agents.
 - [Profit Tracker Template](./30-day-profit-tracker.example.md): See how we track performance.
