@@ -483,7 +483,9 @@ function isAllowedNrlPlayerPointsCandidate(candidate, eventContext) {
 
 function isAllowedNrlSpreadPoint(candidate) {
   const point = getNrlSpreadPoint(candidate);
-  return point !== null && point > 0;
+  const label = normalizeText(candidate?.label || candidate?.outcomeName);
+  // Hard block if point is negative or if the text contains minus markers
+  return point !== null && point > 0 && !label.includes('-') && !label.includes('minus');
 }
 
 function getNrlSafeMarketKey(candidate) {
@@ -1436,7 +1438,7 @@ function estimateCandidateModelProbability(candidate, eventContext) {
       probability += 0.05;
       // Star player role reliability boost
       if (isPreferredAflHighVolumeCandidate(candidate)) {
-        probability += 0.04;
+        probability += 0.08;
       }
     } else if (aflSubtype === 'goal') {
       probability -= 0.04;
@@ -1656,7 +1658,7 @@ function computeSupportScore(candidates, eventContext, dataConfidence, correlati
     // Reward builds that rely on high-volume reliable roles
     const starCount = candidates.filter(isPreferredAflHighVolumeCandidate).length;
     if (starCount > 0) {
-      score += starCount * 0.65;
+      score += starCount * 1.25;
     }
 
     if (candidates.length === 2 && comboProfile.aflDisposalsCount === 2) {
@@ -1840,6 +1842,9 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
   const aflComboStretchPenalty = isSport(eventContext, 'afl') && observedComboOdds !== null && observedComboOdds > 2.55
     ? Math.min(3.2, (observedComboOdds - 2.55) * 4.2)
     : 0;
+  const aflComboFloorPenalty = isSport(eventContext, 'afl') && observedComboOdds !== null && observedComboOdds < 1.90
+    ? 5.0
+    : 0;
   const nrlStructureBonus = isSport(eventContext, 'nrl')
     ? (() => {
       const nrlProfile = getNrlComboProfile(candidates);
@@ -1864,10 +1869,23 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
       return bonus;
     })()
     : 0;
+  const nrlComboTargetBonus = isSport(eventContext, 'nrl') && observedComboOdds !== null
+    ? (observedComboOdds >= 2.0 && observedComboOdds <= 2.3
+      ? 5.0
+      : 0)
+    : 0;
+  const nrlComboStretchPenalty = isSport(eventContext, 'nrl') && observedComboOdds !== null && observedComboOdds > 2.40
+    ? Math.min(8.0, (observedComboOdds - 2.40) * 12.0)
+    : 0;
   const nrlStructurePenalty = isSport(eventContext, 'nrl')
     ? (() => {
       const nrlProfile = getNrlComboProfile(candidates);
-      return nrlProfile.h2hCount * 3.6;
+      let penalty = nrlProfile.h2hCount * 3.6;
+      // Additional penalty for negative lines if they somehow bypassed filters
+      if (nrlProfile.invalidSpreadCount > 0) {
+        penalty += 10.0;
+      }
+      return penalty;
     })()
     : 0;
   const legacyMlbProfile = isSport(eventContext, 'mlb') && usesLegacyMlbStructureProfile(eventContext);
@@ -1915,7 +1933,7 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
   const oddsCeilingPenalty = observedComboOdds !== null && observedComboOdds > 5
     ? (extendedOddsSupported ? 2.5 : 5)
     : 0;
-  const score = rankScore + diversityBonus + legCountBonus + confidenceBonus + propPreferenceBonus + nbaStabilityBonus + aflDisposalBonus + aflDisposalLedBonus + aflComboTargetBonus + nrlStructureBonus + mlbHitStructureBonus + mlbSameSideHitStrikeoutBonus + mlbSoftThirdLegBonus + oddsTargetBonus + (supportScore || 0) - correlationPenalty - h2hPenalty - nbaPointsPenalty - nbaVolatilityPenalty - aflGoalPenalty - aflComboStretchPenalty - nrlStructurePenalty - mlbNoHitPenalty - mlbTotalsPenalty - mlbRbiPenalty - oddsStretchPenalty - oddsCeilingPenalty;
+  const score = rankScore + diversityBonus + legCountBonus + confidenceBonus + propPreferenceBonus + nbaStabilityBonus + aflDisposalBonus + aflDisposalLedBonus + aflComboTargetBonus + aflComboFloorPenalty + nrlStructureBonus + nrlComboTargetBonus + mlbHitStructureBonus + mlbSameSideHitStrikeoutBonus + mlbSoftThirdLegBonus + oddsTargetBonus + (supportScore || 0) - correlationPenalty - h2hPenalty - nbaPointsPenalty - nbaVolatilityPenalty - aflGoalPenalty - aflComboStretchPenalty - nrlComboStretchPenalty - nrlStructurePenalty - mlbNoHitPenalty - mlbTotalsPenalty - mlbRbiPenalty - oddsStretchPenalty - oddsCeilingPenalty;
 
   return {
     candidates,

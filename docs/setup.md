@@ -2,8 +2,8 @@
 
 This guide covers how to run the **SportsTips Tipping Bot**, whether you are using the pre-compiled portable application or running from source.
 
-## 🚀 Quick Start (Windows User)
-1. Download the latest `Tipping Bot Portable.exe` from the `dist/` directory.
+## 🚀 Quick Start (Windows)
+1. Navigate to the `dist/tipping-bot-workspace/` directory.
 2. Double-click the executable to launch the Dashboard UI.
 3. Click **"Turn On"** to start the background automation.
 
@@ -21,7 +21,7 @@ npm install
 ## 3. Configuration
 The bot requires specific configuration files that are excluded from source control for security.
 
-1. Navigate to `automation/discord-webhooks/`.
+1. Navigate to the `automation/discord-webhooks/` directory.
 2. Rename `config.example.json` to `config.json`.
 3. Open `config.json` and paste your **Discord Webhook URLs** into the relevant fields.
 4. Rename `.env.example` to `.env`.

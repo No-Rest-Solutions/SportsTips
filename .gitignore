@@ -25,3 +25,4 @@ dist/
 
 # Internal Design Docs
 PROMO_SYSTEM_IMPLEMENTATION.md
+.continue/agents/new-config.yaml

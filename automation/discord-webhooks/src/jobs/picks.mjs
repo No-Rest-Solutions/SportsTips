@@ -1507,9 +1507,10 @@ function isPositiveNrlSpreadLeg(leg) {
   if (!isSpreadLeg(leg)) {
     return false;
   }
-
   const point = getLegNumericPoint(leg);
-  return point !== null && point > 0;
+  const label = normalizeText(leg?.label || leg?.source?.outcomeName);
+  // Stricter check: must have a numeric point > 0 AND no negative symbols in the string
+  return point !== null && point > 0 && !label.includes('-') && !label.includes('minus');
 }
 
 function getNrlLegMarketKey(leg) {
