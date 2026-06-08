@@ -662,6 +662,25 @@ function isAflPromoDay(eventContext) {
   return weekday === 'Sat' || weekday === 'Sun';
 }
 
+function isNbaHighStakes(eventContext) {
+  const name = normalizeText(eventContext?.eventName);
+  return /\b(final|finals|playoff|playoffs|semi|semis|championship)\b/.test(name);
+}
+
+function getNbaPointsLine(candidate) {
+  if (getNbaPropSubtype(candidate) !== 'points') return null;
+  const rawText = ` ${getCandidateRawSearchText(candidate)} `;
+  const match = rawText.match(/\b(\d+)\s*\+\s*points?\b/i);
+  return match ? toNumber(match[1]) : null;
+}
+
+function isNbaStarCandidate(candidate) {
+  if (getNbaPropSubtype(candidate) !== 'points') return false;
+  const line = getNbaPointsLine(candidate);
+  // Using 15+ or 20+ as the proxy for Star Players (20+ PPG avg) as per rules
+  return line !== null && line >= 15;
+}
+
 function getCandidateSearchText(candidate) {
   return String([
     candidate?.market,
@@ -1394,9 +1413,15 @@ function estimateCandidateModelProbability(candidate, eventContext) {
   const mlbSubtype = getMlbPropSubtype(candidate);
 
   if (nbaSubtype === 'assist' || nbaSubtype === 'rebound' || nbaSubtype === 'combo') {
-    probability += 0.05;
+    // Increase probability for 'Combo' markets as they are the safest floors
+    probability += nbaSubtype === 'combo' ? 0.09 : 0.05;
   } else if (nbaSubtype === 'points') {
-    probability -= 0.02;
+    // Neutralize points penalty for Star players (safety buffer)
+    if (isNbaStarCandidate(candidate)) {
+      probability += 0.03;
+    } else {
+      probability -= 0.02;
+    }
   } else if (nbaSubtype === 'three' || nbaSubtype === 'steal' || nbaSubtype === 'block') {
     probability -= 0.06;
   }
@@ -1599,10 +1624,22 @@ function computeSupportScore(candidates, eventContext, dataConfidence, correlati
   }
 
   if (isSport(eventContext, 'nba')) {
-    score += comboProfile.nbaStablePropCount * 0.35;
+    // Prioritize actual Combos (PRA, PA, etc) with a higher weight
+    const combos = candidates.filter(c => getNbaPropSubtype(c) === 'combo').length;
+    score += combos * 0.75;
+    score += (comboProfile.nbaStablePropCount - combos) * 0.35;
 
-    if (comboProfile.nbaPointsCount > 1) {
-      score -= (comboProfile.nbaPointsCount - 1) * 0.45;
+    // Allow variety for Stars; only penalize multiple role-player points
+    const starPoints = candidates.filter(isNbaStarCandidate).length;
+    const rolePoints = comboProfile.nbaPointsCount - starPoints;
+
+    if (rolePoints > 1) {
+      score -= (rolePoints - 1) * 0.45;
+    }
+    
+    // High-Stakes context (Finals) increases reliability for Stars
+    if (isNbaHighStakes(eventContext)) {
+      score += starPoints * 0.6;
     }
 
     score -= comboProfile.nbaVolatilePropCount * 0.5;
@@ -1825,6 +1862,10 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
       : 0)
     : 0;
   const nbaStabilityBonus = isSport(eventContext, 'nba') ? comboProfile.nbaStablePropCount * 1.6 : 0;
+  const nbaComboPriorityBonus = isSport(eventContext, 'nba') 
+    ? (candidates.filter(c => getNbaPropSubtype(c) === 'combo').length * 2.5) 
+    : 0;
+  const nbaHighStakesBonus = (isSport(eventContext, 'nba') && isNbaHighStakes(eventContext)) ? 3.5 : 0;
   const nbaPointsPenalty = isSport(eventContext, 'nba') && comboProfile.nbaPointsCount > 1 ? (comboProfile.nbaPointsCount - 1) * 2.2 : 0;
   const nbaVolatilityPenalty = isSport(eventContext, 'nba') ? comboProfile.nbaVolatilePropCount * 2 : 0;
   const aflDisposalBonus = isSport(eventContext, 'afl') ? comboProfile.aflDisposalsCount * 1.8 : 0;
@@ -1933,7 +1974,7 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
   const oddsCeilingPenalty = observedComboOdds !== null && observedComboOdds > 5
     ? (extendedOddsSupported ? 2.5 : 5)
     : 0;
-  const score = rankScore + diversityBonus + legCountBonus + confidenceBonus + propPreferenceBonus + nbaStabilityBonus + aflDisposalBonus + aflDisposalLedBonus + aflComboTargetBonus + aflComboFloorPenalty + nrlStructureBonus + nrlComboTargetBonus + mlbHitStructureBonus + mlbSameSideHitStrikeoutBonus + mlbSoftThirdLegBonus + oddsTargetBonus + (supportScore || 0) - correlationPenalty - h2hPenalty - nbaPointsPenalty - nbaVolatilityPenalty - aflGoalPenalty - aflComboStretchPenalty - nrlComboStretchPenalty - nrlStructurePenalty - mlbNoHitPenalty - mlbTotalsPenalty - mlbRbiPenalty - oddsStretchPenalty - oddsCeilingPenalty;
+  const score = rankScore + diversityBonus + legCountBonus + confidenceBonus + propPreferenceBonus + nbaStabilityBonus + nbaComboPriorityBonus + nbaHighStakesBonus + aflDisposalBonus + aflDisposalLedBonus + aflComboTargetBonus + aflComboFloorPenalty + nrlStructureBonus + nrlComboTargetBonus + mlbHitStructureBonus + mlbSameSideHitStrikeoutBonus + mlbSoftThirdLegBonus + oddsTargetBonus + (supportScore || 0) - correlationPenalty - h2hPenalty - nbaPointsPenalty - nbaVolatilityPenalty - aflGoalPenalty - aflComboStretchPenalty - nrlComboStretchPenalty - nrlStructurePenalty - mlbNoHitPenalty - mlbTotalsPenalty - mlbRbiPenalty - oddsStretchPenalty - oddsCeilingPenalty;
 
   return {
     candidates,

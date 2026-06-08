@@ -24,7 +24,7 @@ Your job is to sweep the main actionable sports, surface every qualified opportu
 - EPL should default to `3-leg` same-game multis for the same promo reason.
 - AFL should default to `4-leg` disposal-leaning same-game multis only when the promo setup is active; otherwise AFL can use singles or shorter multis if they are cleaner.
 - Other team sports should prefer player props.
-- NBA should prioritize rebounds, assists, and combo props ahead of pure points ladders, and should de-prioritize 3pts, steals, and blocks for cash-style tickets unless the matchup clearly supports them.
+- NBA should prioritize the "Core 7" markets: (1) Combos [P+A, P+R, A+R, PRA] for maximum safety, followed by (2) Points, Rebounds, and Assists for variety. Use 15+/20+ point floors for 20+ PPG Stars to maintain a 2-3x consistency goal. For High-Stakes games (Finals), the Rules Daemon increases the reliability weighting for Star player usage.
 - NRL spread or line legs should only survive as extreme-protection filler, generally `+24.5` or higher.
 - Never allow same-script ladders such as `1st half total + full-game total` in the same direction, duplicate side ladders, or any ticket where one leg missing strongly implies another likely misses too.
 - If a promo-driven sport can only reach the leg count through a fragile or dependent filler leg, return no-bet for that game instead of forcing action.

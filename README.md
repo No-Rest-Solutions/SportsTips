@@ -4,6 +4,13 @@ An automated desktop dashboard and Discord webhook system for tracking, analyzin
 
 ---
 
+## ⚙️ System Architecture
+
+- **Primary Logic (Rules Daemon):** The core decision engine lives in `automation/discord-webhooks/src/`. This handles market filtering, combo prioritization, and benchmark enforcement.
+- **Fallback Layer (AI Research):** OpenAI/Gemini agents act as a research layer for deeper context (injuries, usage shifts) but are subject to the hard-coded constraints of the Daemon.
+
+---
+
 ## 📖 Documentation
 
 - [Getting Started](./docs/setup.md): How to install and run the Tipping Bot.
@@ -105,7 +112,9 @@ See `reports/model-benchmarks.md` for the detailed support, robustness, ROI, and
 - For MLB specifically, do not pivot to totals, team totals, or inning totals just because another market looks more dramatic if the hit-led structure is still viable. Research, lineup stability, pitcher context, and weather should be used first to choose the third leg inside the prop-led build.
 - For NBA in this workspace, assume alt assists and rebounds often move only in increments of `2` unless you say otherwise, so the workflow should not suggest invalid odd thresholds.
 - For NBA in this workspace, valid market families should include points, `2pts`, `3pts`, `PRA`, `PA`, `RA`, and `RP` whenever those are available on the book, but rebounds, assists, and combo props should be prioritized ahead of pure points ladders in cash-style builds.
-- For NBA cash-style builds in this workspace, de-prioritize `3pts`, steals, and blocks unless the matchup and menu make one of those markets unusually strong.
+- For NBA in this workspace, the 7 core low-volatility markets are: (1) Combos: P+A, P+R, A+R, PRA, and (2) Singles: Points, Rebounds, Assists. Prioritize Combos first for the safest floor.
+- For NBA cash-style builds, treat 15+ or 20+ points for "Star" players (20+ PPG average) as high-variety safety rungs.
+- For NBA, de-prioritize `3pts`, steals, and blocks due to high volatility unless the matchup is extreme.
 - For NRL in this workspace, generated slips are same-game-multi only, keep the `3-leg` promo structure, and treat standard spread or line legs as too volatile by default; only use extreme-protection filler lines, generally `+24.5` or higher, when a third leg is unavoidable.
 - For AFL in this workspace, generated slips are same-game-multi only and should stay in safer `2-leg` to `3-leg` disposal-led builds by default rather than drifting into singles or cross-game structures.
 - For team sports, same-game multis are the default bet unit. Tennis and other individual sports may use cross-match H2H or prop multis when same-game construction is not a meaningful market format.
