@@ -4,12 +4,12 @@
 
 | Metric | Value |
 | --- | ---: |
-| Wins | 13 |
+| Wins | 15 |
 | Losses | 10 |
 | Returns/Voided | 0 |
-| Settled Bets | 23 |
-| Win % | 56.52% |
-| Net Units | 10.04 |
+| Settled Bets | 25 |
+| Win % | 60.00% |
+| Net Units | 12.08 |
 | Last Updated | 05/10/2026 AEDT |
 
 ## Notes
@@ -24,5 +24,5 @@
 - 05/08/2026 | Brisbane Lions vs Carlton | Win | +1.10u | Disposal-led safer Brisbane same-game multi placed via TAB.
 - 05/08/2026 | Port Adelaide vs Western Bulldogs | Win | +1.10u | Exact return confirmed at $21.00 AUD.
 - 05/08/2026 | Brisbane Lions vs Carlton | Loss | -0.50u | Higher-variance disposal-only ladder lost.
-- 11/06/2026 | Western Bulldogs vs Adelaide Crows | Win | +0.26u | Auto-settled from consensus sources (ESPN, Official AFL) final score: Adelaide Crows 121 - Western Bulldogs 64. Rules engine approved a 3-leg build from market depth, structural fit, and benchmark acceptance. Pre-pick research cleared the selected legs with fallback context: Pre-pick ESPN injury research is not configured for this event. | Official AFL player profile confirms Bailey Dale is currently listed for Western Bulldogs. | Outdoor weather research could not be fully verified before pick generation.000Z.
-- 08/06/2026 | Collingwood vs Melbourne | Loss | -1.00u | Auto-settled from consensus sources (ESPN, Official AFL) final score: Melbourne 83 - Collingwood 75. Rules engine approved a 3-leg build from market depth, structural fit, and benchmark acceptance. Pre-pick research cleared the selected legs with fallback context: Pre-pick ESPN injury research is not configured for this event. | Official AFL player profile confirms Billy Frampton is currently listed for Collingwood. | Outdoor weather research could not be fully verified before pick generation.000Z.
+- 12/06/2026 | Geelong Cats vs Gold Coast SUNS | Win | +1.05u | Auto-settled from consensus sources (ESPN, Official AFL) final score: Gold Coast SUNS 60 - Geelong Cats 105. Rules engine approved a 3-leg build from market depth, structural fit, and benchmark acceptance. Pre-pick research cleared the selected legs with fallback context: Pre-pick ESPN injury research is not configured for this event. | Official AFL player profile confirms Bailey Smith is currently listed for Geelong Cats. | Outdoor weather research could not be fully verified before pick generation.000Z.
+- 12/06/2026 | Geelong Cats vs Gold Coast SUNS | Win | +0.99u | Auto-settled from consensus sources (ESPN, Official AFL) final score: Gold Coast SUNS 60 - Geelong Cats 105. Rules engine approved a 3-leg build from market depth, structural fit, and benchmark acceptance. Pre-pick research cleared the selected legs with fallback context: Pre-pick ESPN injury research is not configured for this event. | Official AFL player profile confirms Bailey Smith is currently listed for Geelong Cats. | Outdoor weather research could not be fully verified before pick generation.000Z.
