@@ -1961,7 +1961,13 @@ function buildCandidateResearch(candidate, sport, eventContext, injuryResearch, 
         reasons.push(`${unavailableTeammates} teammates on ${playerTeamName || 'the same side'} are currently listed unavailable or limited, making the role context too volatile for ${candidate.label}.`);
       }
     } else {
-      if (normalizeText(sport?.key || eventContext?.sportKey) === 'afl') {
+      // ESPN has no injury feed for AFL or NRL, so the gap is structural, not a
+      // red flag on the player. Treating it as hard was forcing dataConfidence
+      // to low for every NRL kicker-points combo, leaving H2H+total as the only
+      // acceptable build. NRL kickers keep the wet-weather block as their guard.
+      const researchSportKey = normalizeText(sport?.key || eventContext?.sportKey);
+
+      if (researchSportKey === 'afl' || researchSportKey === 'nrl') {
         hasSoftResearchGap = true;
       } else {
         hasResearchGap = true;

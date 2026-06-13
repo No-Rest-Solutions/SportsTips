@@ -3895,7 +3895,7 @@ test('analyzeEventWithRules keeps accepted 3-leg NRL combos publishable through 
       market: 'totals',
       outcomeName: 'Under',
       description: '',
-      point: 50.5,
+      point: 52.5,
       fetchedAt,
       source: 'snapshot',
       prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.48 }]
@@ -3909,7 +3909,7 @@ test('analyzeEventWithRules keeps accepted 3-leg NRL combos publishable through 
       market: 'first_half_totals',
       outcomeName: 'Under',
       description: '',
-      point: 23.5,
+      point: 26.5,
       fetchedAt,
       source: 'snapshot',
       prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.42 }]
@@ -3981,7 +3981,7 @@ test('analyzeEventWithRules accepts a 3-leg NRL build with one genuine kicker-po
       market: 'totals',
       outcomeName: 'Under',
       description: '',
-      point: 48.5,
+      point: 52.5,
       fetchedAt,
       source: 'snapshot',
       prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.44 }]
@@ -4049,9 +4049,122 @@ test('analyzeEventWithRules accepts a 3-leg NRL build with one genuine kicker-po
   assert.ok(pick);
   assert.equal(pick.legs.length, 3);
   assert.ok(pick.legs.some((leg) => leg.label === 'Matt Burton 6+ Points'));
-  assert.ok(pick.legs.some((leg) => leg.label === 'Under 48.5'));
+  assert.ok(pick.legs.some((leg) => leg.label === 'Under 52.5'));
   assert.ok(pick.legs.some((leg) => leg.label === '1st Half Melbourne Storm +0.5'));
   assert.ok(pick.legs.every((leg) => !/head to head|h2h/i.test(leg.label)));
+});
+
+test('analyzeEventWithRules accepts a realistic-priced 3-leg NRL kicker build instead of the H2H and under fallback', async () => {
+  const startTime = '2026-06-13T09:35:00.000Z';
+  const fetchedAt = new Date().toISOString();
+  const eventContext = {
+    sportKey: 'nrl',
+    sportLabel: 'NRL',
+    marketSportKey: 'nrl',
+    eventId: 'snapshot:nrl:eels-vs-raiders-realistic-prices',
+    eventName: 'Parramatta Eels vs Canberra Raiders',
+    homeTeam: 'Parramatta Eels',
+    awayTeam: 'Canberra Raiders',
+    startTime,
+    generatorConfig: {
+      minBooks: 1,
+      stakeUnits: 1,
+      maxStakeUnits: 2,
+      teamSportsH2hPolicy: 'fallback_only'
+    }
+  };
+  const quotes = [
+    {
+      sportKey: 'nrl',
+      homeTeam: 'Parramatta Eels',
+      awayTeam: 'Canberra Raiders',
+      displayName: 'Parramatta Eels vs Canberra Raiders',
+      startTime,
+      market: 'totals',
+      outcomeName: 'Under',
+      description: '',
+      point: 52.5,
+      fetchedAt,
+      source: 'snapshot',
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.84 }]
+    },
+    {
+      sportKey: 'nrl',
+      homeTeam: 'Parramatta Eels',
+      awayTeam: 'Canberra Raiders',
+      displayName: 'Parramatta Eels vs Canberra Raiders',
+      startTime,
+      market: 'spreads',
+      outcomeName: 'Parramatta Eels',
+      description: '',
+      point: 2.5,
+      fetchedAt,
+      source: 'snapshot',
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.89 }]
+    },
+    {
+      sportKey: 'nrl',
+      homeTeam: 'Parramatta Eels',
+      awayTeam: 'Canberra Raiders',
+      displayName: 'Parramatta Eels vs Canberra Raiders',
+      startTime,
+      market: 'player_points',
+      outcomeName: '4+ Points',
+      description: 'Ethan Sanders',
+      point: null,
+      fetchedAt,
+      source: 'snapshot',
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.18 }]
+    },
+    {
+      sportKey: 'nrl',
+      homeTeam: 'Parramatta Eels',
+      awayTeam: 'Canberra Raiders',
+      displayName: 'Parramatta Eels vs Canberra Raiders',
+      startTime,
+      market: 'h2h',
+      outcomeName: 'Canberra Raiders',
+      description: '',
+      point: null,
+      fetchedAt,
+      source: 'snapshot',
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.45 }]
+    }
+  ];
+  const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14)
+    .map((candidate) => (candidate.family === 'prop'
+      ? {
+        ...candidate,
+        researchStatus: 'partial',
+        researchGapSeverity: 'soft',
+        researchReasons: ['Pre-pick ESPN injury research is not configured for this event.']
+      }
+      : candidate));
+  const context = {
+    config: {
+      benchmarkFilters: {
+        requireSupportData: false,
+        significantSupportScore: 5,
+        strongSupportScore: 8
+      }
+    }
+  };
+
+  const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
+  const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
+
+  // Real NRL anchors price ~1.8-1.9, so this build lands ~4.1x: above the
+  // generic 3.25x target but inside the NRL 3-leg ceiling. It must be accepted
+  // outright rather than losing to the short H2H + total fallback.
+  assert.equal(decision.qualifies, true);
+  assert.equal(decision.recommendation, 'build_3_leg_multi');
+  assert.ok(pick);
+  assert.equal(pick.legs.length, 3);
+  assert.ok(pick.legs.some((leg) => leg.label === 'Under 52.5'));
+  assert.ok(pick.legs.some((leg) => leg.label === 'Parramatta Eels +2.5'));
+  assert.ok(pick.legs.some((leg) => leg.label === 'Ethan Sanders 4+ Points'));
+  assert.ok(pick.legs.every((leg) => !/head to head|h2h/i.test(leg.label)));
+  assert.ok(!/fallback forced/.test(String(decision.notes || '')));
 });
 
 test('analyzeEventWithRules prefers the NRL first-half total and plus-line mix over moneyline fallbacks', async () => {
@@ -4083,7 +4196,7 @@ test('analyzeEventWithRules prefers the NRL first-half total and plus-line mix o
       market: 'totals',
       outcomeName: 'Under',
       description: '',
-      point: 48.5,
+      point: 52.5,
       fetchedAt,
       source: 'snapshot',
       prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.44 }]
@@ -4097,7 +4210,7 @@ test('analyzeEventWithRules prefers the NRL first-half total and plus-line mix o
       market: 'first_half_totals',
       outcomeName: 'Under',
       description: '',
-      point: 23.5,
+      point: 26.5,
       fetchedAt,
       source: 'snapshot',
       prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.46 }]
@@ -4162,8 +4275,8 @@ test('analyzeEventWithRules prefers the NRL first-half total and plus-line mix o
   assert.equal(decision.qualifies, true);
   assert.ok(pick);
   assert.equal(pick.legs.length, 3);
-  assert.ok(pick.legs.some((leg) => leg.label === 'Under 48.5'));
-  assert.ok(pick.legs.some((leg) => leg.label === '1st Half Under 23.5'));
+  assert.ok(pick.legs.some((leg) => leg.label === 'Under 52.5'));
+  assert.ok(pick.legs.some((leg) => leg.label === '1st Half Under 26.5'));
   assert.ok(pick.legs.some((leg) => leg.label === '1st Half Melbourne Storm +0.5'));
   assert.ok(pick.legs.every((leg) => !/head to head|h2h/i.test(leg.label)));
   assert.ok(pick.legs.every((leg) => !/-2\.5/.test(leg.label)));
@@ -4212,7 +4325,7 @@ test('analyzeEventWithRules forces the safest available 2-leg NRL combo when ben
       market: 'totals',
       outcomeName: 'Under',
       description: '',
-      point: 50.5,
+      point: 52.5,
       fetchedAt,
       source: 'snapshot',
       prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.9 }]
@@ -4256,7 +4369,7 @@ test('analyzeEventWithRules forces the safest available 2-leg NRL combo when ben
   assert.ok(pick?.legs.every((leg) => !/head to head|h2h/i.test(leg.label)));
 });
 
-test('buildAnalysisCandidatePool removes race-to-points markets and negative NRL lines while keeping genuine NRL kicker points', () => {
+test('buildAnalysisCandidatePool removes race-to-points markets, negative lines, and coin-flip NRL totals while keeping genuine kicker points', () => {
   const startTime = '2026-05-23T09:30:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -4310,6 +4423,34 @@ test('buildAnalysisCandidatePool removes race-to-points markets and negative NRL
       awayTeam: 'Melbourne Storm',
       displayName: 'Canterbury Bulldogs vs Melbourne Storm',
       startTime,
+      market: 'totals',
+      outcomeName: 'Under',
+      description: '',
+      point: 50.5,
+      fetchedAt,
+      source: 'snapshot',
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.85 }]
+    },
+    {
+      sportKey: 'nrl',
+      homeTeam: 'Canterbury Bulldogs',
+      awayTeam: 'Melbourne Storm',
+      displayName: 'Canterbury Bulldogs vs Melbourne Storm',
+      startTime,
+      market: 'totals',
+      outcomeName: 'Under',
+      description: '',
+      point: 52.5,
+      fetchedAt,
+      source: 'snapshot',
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.85 }]
+    },
+    {
+      sportKey: 'nrl',
+      homeTeam: 'Canterbury Bulldogs',
+      awayTeam: 'Melbourne Storm',
+      displayName: 'Canterbury Bulldogs vs Melbourne Storm',
+      startTime,
       market: 'spreads',
       outcomeName: 'Canterbury Bulldogs',
       description: '',
@@ -4351,7 +4492,11 @@ test('buildAnalysisCandidatePool removes race-to-points markets and negative NRL
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
 
   assert.equal(candidatePool.some((candidate) => /race/i.test(candidate.label)), false);
-  assert.equal(candidatePool.some((candidate) => /over 48\.5/i.test(candidate.label)), true);
+  // Soft overs (line above 40.5) and shallow unders (line below 51.5) are near
+  // coin flips, so neither side of a mid-40s total may enter the pool.
+  assert.equal(candidatePool.some((candidate) => /over 48\.5/i.test(candidate.label)), false);
+  assert.equal(candidatePool.some((candidate) => /under 50\.5/i.test(candidate.label)), false);
+  assert.equal(candidatePool.some((candidate) => /under 52\.5/i.test(candidate.label)), true);
   assert.equal(candidatePool.some((candidate) => candidate.point === -2.5), false);
   assert.equal(candidatePool.some((candidate) => candidate.label === 'Matt Burton 6+ Points'), true);
   assert.equal(candidatePool.some((candidate) => candidate.label === 'Canterbury Bulldogs 4+ Points'), false);

@@ -316,6 +316,10 @@ function roundMetric(value) {
 
 const SAFE_GENERATED_TOTAL_ODDS_TARGET_MAX = 3.25;
 const SAFE_GENERATED_TOTAL_ODDS_HARD_MAX = 5;
+// NRL anchor legs (protected plus lines, safe totals) price ~1.8-1.9, so even
+// the safest 3-leg line+line+kicker mix lands ~3.3-4.6x. Without this ceiling
+// the generic 3.25x target makes every NRL 3-leg build unreachable.
+const NRL_THREE_LEG_ODDS_MAX = 4.6;
 
 function estimateObservedComboOdds(candidates) {
   const candidatePrices = candidates
@@ -549,9 +553,11 @@ function isAllowedNrlTotalCandidate(candidate) {
   }
 
   // Full game totals: NRL avg ~44 points.
-  // OVER 40.5+ has <55% probability; UNDER below 44 is too easy to miss.
+  // OVER 40.5+ has <55% probability; UNDER needs a 7+ point cushion above the
+  // league average to act as an anchor — sub-51.5 unders (47.5-50.5 lines) are
+  // near coin flips and have been repeat losers.
   if (direction === 'over') return line !== null && line <= 40.5;
-  if (direction === 'under') return line !== null && line >= 44;
+  if (direction === 'under') return line !== null && line >= 51.5;
   return true;
 }
 
@@ -1325,8 +1331,12 @@ function passesSportSpecificComboRules(eventContext, candidates) {
     }
 
     if (candidates.length === 3) {
+      // Three distinct safe categories, no H2H, anchored by at least one
+      // protected plus line. When no safe total line exists (books often sit
+      // in the blocked 44-51 under range), the kicker-points leg may stand in
+      // as the third category alongside the full-game/first-half line pair.
       return nrlProfile.h2hCount === 0
-        && nrlProfile.totalCount >= 1
+        && (nrlProfile.totalCount >= 1 || nrlProfile.playerPointsCount === 1)
         && nrlProfile.spreadCount >= 1
         && nrlProfile.uniqueSafeMarketCount === 3;
     }
@@ -1814,7 +1824,14 @@ function supportsSportSpecificExtendedOdds(eventContext, candidates, comboProfil
   }
 
   if (isSport(eventContext, 'nrl')) {
-    return false;
+    const nrlProfile = getNrlComboProfile(candidates);
+
+    return candidates.length === 3
+      && observedComboOdds <= NRL_THREE_LEG_ODDS_MAX
+      && nrlProfile.h2hCount === 0
+      && nrlProfile.uniqueSafeMarketCount === 3
+      && nrlProfile.unsupportedCount === 0
+      && nrlProfile.invalidSpreadCount === 0;
   }
 
   return false;
@@ -2004,13 +2021,18 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
       return bonus;
     })()
     : 0;
+  // 2-leg builds target the short 2.0-2.3x band; 3-leg line+line+kicker mixes
+  // structurally price ~3.3-4.6x, so they get their own band instead of being
+  // crushed by the 2-leg stretch penalty.
+  const nrlComboOddsCeiling = candidates.length === 3 ? NRL_THREE_LEG_ODDS_MAX : 2.3;
+  const nrlComboStretchStart = candidates.length === 3 ? NRL_THREE_LEG_ODDS_MAX : 2.40;
   const nrlComboTargetBonus = isSport(eventContext, 'nrl') && observedComboOdds !== null
-    ? (observedComboOdds >= 2.0 && observedComboOdds <= 2.3
+    ? (observedComboOdds >= 2.0 && observedComboOdds <= nrlComboOddsCeiling
       ? 5.0
       : 0)
     : 0;
-  const nrlComboStretchPenalty = isSport(eventContext, 'nrl') && observedComboOdds !== null && observedComboOdds > 2.40
-    ? Math.min(8.0, (observedComboOdds - 2.40) * 12.0)
+  const nrlComboStretchPenalty = isSport(eventContext, 'nrl') && observedComboOdds !== null && observedComboOdds > nrlComboStretchStart
+    ? Math.min(8.0, (observedComboOdds - nrlComboStretchStart) * 12.0)
     : 0;
   const nrlStructurePenalty = isSport(eventContext, 'nrl')
     ? (() => {
