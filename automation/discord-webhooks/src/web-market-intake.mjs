@@ -1546,6 +1546,13 @@ function buildSportsbetStructuredMarketDescriptor(sportKey, marketName, outcome)
     return buildGenericStructuredMarketDescriptor(marketName, outcome);
   }
 
+  if (normalizedSportKey.startsWith('tennis')) {
+    // Tennis renders prices in embedded JSON, not the league-page visible text the
+    // featured-market regex scrapes, and its h2h market is labelled "Match Betting".
+    // Route to the generic descriptor so tennis h2h is read from the event-page JSON.
+    return buildGenericStructuredMarketDescriptor(marketName, outcome);
+  }
+
   if (normalizedSportKey !== 'nrl') {
     return null;
   }

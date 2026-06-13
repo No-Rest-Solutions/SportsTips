@@ -2725,7 +2725,7 @@ test('buildAnalysisCandidatePool keeps supported AFL 20+ and 25+ disposal ladder
   assert.equal(candidatePool.some((candidate) => /Fringe Winger|Depth Mid|Pocket Runner/.test(candidate.label)), false);
 });
 
-test('buildAnalysisCandidatePool keeps conservative MLB strikeout legs available behind a deep hit board', () => {
+test('buildAnalysisCandidatePool (v3) keeps the MLB favourite moneyline and +1.5 run line and drops props/totals', () => {
   const startTime = '2026-05-30T23:11:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -2744,45 +2744,37 @@ test('buildAnalysisCandidatePool keeps conservative MLB strikeout legs available
       teamSportsH2hPolicy: 'fallback_only'
     }
   };
-  const makeHitQuote = (description, price) => ({
+  const base = {
     sportKey: 'mlb',
     homeTeam: 'Tampa Bay Rays',
     awayTeam: 'Los Angeles Angels',
     displayName: 'Los Angeles Angels vs Tampa Bay Rays',
     startTime,
-    market: 'batter_hits',
-    outcomeName: '1+ Hit',
-    description,
-    point: null,
     fetchedAt,
-    source: 'snapshot',
-    prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price }]
-  });
-  const makeStrikeoutQuote = (description, line, price) => ({
-    sportKey: 'mlb',
-    homeTeam: 'Tampa Bay Rays',
-    awayTeam: 'Los Angeles Angels',
-    displayName: 'Los Angeles Angels vs Tampa Bay Rays',
-    startTime,
-    market: 'pitcher_strikeouts',
-    outcomeName: `${line}+ Strikeouts`,
-    description,
-    point: null,
-    fetchedAt,
-    source: 'snapshot',
-    prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price }]
-  });
-  const hitQuotes = Array.from({ length: 18 }, (_, index) => makeHitQuote(`Hit Candidate ${index + 1}`, 1.28 + (index * 0.02)));
+    source: 'snapshot'
+  };
+  const px = (price) => [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price }];
   const quotes = [
-    ...hitQuotes,
-    makeStrikeoutQuote('Nick Martinez', 4, 1.48),
-    makeStrikeoutQuote('Walbert Urena', 4, 1.52)
+    { ...base, market: 'h2h', outcomeName: 'Tampa Bay Rays', description: '', point: null, prices: px(1.55) },
+    { ...base, market: 'h2h', outcomeName: 'Los Angeles Angels', description: '', point: null, prices: px(2.45) },
+    { ...base, market: 'spreads', outcomeName: 'Tampa Bay Rays', description: '', point: -1.5, prices: px(2.5) },
+    { ...base, market: 'spreads', outcomeName: 'Los Angeles Angels', description: '', point: 1.5, prices: px(1.52) },
+    { ...base, market: 'totals', outcomeName: 'Over', description: '', point: 8.5, prices: px(1.9) },
+    { ...base, market: 'batter_hits', outcomeName: '1+ Hit', description: 'Yandy Diaz', point: null, prices: px(1.4) }
   ];
 
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
 
-  assert.ok(candidatePool.some((candidate) => candidate.label === 'Nick Martinez 4+ Strikeouts'));
-  assert.ok(candidatePool.some((candidate) => candidate.label === 'Walbert Urena 4+ Strikeouts'));
+  // Favourite moneyline (≤1.65) kept; underdog moneyline (2.45) dropped.
+  const isH2h = (c) => String(c.market).toLowerCase() === 'h2h';
+  assert.ok(candidatePool.some((c) => isH2h(c) && /Tampa Bay Rays/.test(c.label)));
+  assert.equal(candidatePool.some((c) => isH2h(c) && /Los Angeles Angels/.test(c.label)), false);
+  // Protected +1.5 run line kept; the -1.5 favourite line dropped.
+  assert.ok(candidatePool.some((c) => Number(c.point) === 1.5));
+  assert.equal(candidatePool.some((c) => Number(c.point) === -1.5), false);
+  // Props and totals are not part of the v3 featured-single pool.
+  assert.equal(candidatePool.some((c) => c.family === 'prop'), false);
+  assert.equal(candidatePool.some((c) => c.family === 'total'), false);
 });
 
 test('buildPickFromAnalysisDecision adds two AFL bonus disposal options without changing the main slip', async () => {
@@ -3338,7 +3330,7 @@ test('buildAnalysisCandidatePool rejects off-step AFL disposal ladders outside 1
   assert.deepEqual(outcomeNames, ['10+ Disposals', '15+ Disposals']);
 });
 
-test('analyzeEventWithRules rejects MLB builds when fewer than two clean hit props are available', async () => {
+test('analyzeEventWithRules (v3) returns no_bet for MLB when only late props and totals are available', async () => {
   const startTime = '2026-05-23T17:30:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3378,20 +3370,6 @@ test('analyzeEventWithRules rejects MLB builds when fewer than two clean hit pro
       awayTeam: 'Tampa Bay Rays',
       displayName: 'Tampa Bay Rays vs New York Yankees',
       startTime,
-      market: 'pitcher_strikeouts',
-      outcomeName: 'Over',
-      description: 'Drew Rasmussen',
-      point: 4.5,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.64 }]
-    },
-    {
-      sportKey: 'mlb',
-      homeTeam: 'New York Yankees',
-      awayTeam: 'Tampa Bay Rays',
-      displayName: 'Tampa Bay Rays vs New York Yankees',
-      startTime,
       market: 'totals',
       outcomeName: 'Over',
       description: '',
@@ -3417,7 +3395,7 @@ test('analyzeEventWithRules rejects MLB builds when fewer than two clean hit pro
   assert.equal(decision.qualifies, false);
   assert.equal(decision.recommendation, 'no_bet');
   assert.equal(pick, null);
-  assert.match(decision.noBetReason, /two verified 1\+ hit props|two clean hit props/i);
+  assert.match(decision.noBetReason, /favourite moneyline|\+1\.5 run.?line|market-backed candidates/i);
 });
 
 test('analyzeEventWithRules keeps legacy MLB rebuilds on the old hit-led structure', async () => {
@@ -3502,7 +3480,7 @@ test('analyzeEventWithRules keeps legacy MLB rebuilds on the old hit-led structu
   assert.match(decision.noBetReason, /at least two clean hit props/i);
 });
 
-test('analyzeEventWithRules keeps MLB tickets on clean hit props instead of adding totals filler', async () => {
+test('analyzeEventWithRules (v3) posts a single MLB favourite-moneyline leg and ignores props/totals', async () => {
   const startTime = '2026-05-23T19:05:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3521,49 +3499,21 @@ test('analyzeEventWithRules keeps MLB tickets on clean hit props instead of addi
       teamSportsH2hPolicy: 'fallback_only'
     }
   };
+  const base = {
+    sportKey: 'mlb',
+    homeTeam: 'Cleveland Guardians',
+    awayTeam: 'Philadelphia Phillies',
+    displayName: 'Philadelphia Phillies vs Cleveland Guardians',
+    startTime,
+    fetchedAt,
+    source: 'snapshot'
+  };
+  const px = (price) => [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price }];
   const quotes = [
-    {
-      sportKey: 'mlb',
-      homeTeam: 'Cleveland Guardians',
-      awayTeam: 'Philadelphia Phillies',
-      displayName: 'Philadelphia Phillies vs Cleveland Guardians',
-      startTime,
-      market: 'batter_hits',
-      outcomeName: '1+ Hit',
-      description: 'Alec Bohm',
-      point: null,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.46 }]
-    },
-    {
-      sportKey: 'mlb',
-      homeTeam: 'Cleveland Guardians',
-      awayTeam: 'Philadelphia Phillies',
-      displayName: 'Philadelphia Phillies vs Cleveland Guardians',
-      startTime,
-      market: 'batter_hits',
-      outcomeName: '1+ Hit',
-      description: 'Jose Ramirez',
-      point: null,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.44 }]
-    },
-    {
-      sportKey: 'mlb',
-      homeTeam: 'Cleveland Guardians',
-      awayTeam: 'Philadelphia Phillies',
-      displayName: 'Philadelphia Phillies vs Cleveland Guardians',
-      startTime,
-      market: 'totals',
-      outcomeName: 'Over',
-      description: '',
-      point: 8.5,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.41 }]
-    }
+    { ...base, market: 'h2h', outcomeName: 'Cleveland Guardians', description: '', point: null, prices: px(1.58) },
+    { ...base, market: 'h2h', outcomeName: 'Philadelphia Phillies', description: '', point: null, prices: px(2.4) },
+    { ...base, market: 'totals', outcomeName: 'Over', description: '', point: 8.5, prices: px(1.41) },
+    { ...base, market: 'batter_hits', outcomeName: '1+ Hit', description: 'Jose Ramirez', point: null, prices: px(1.44) }
   ];
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
   const context = {
@@ -3578,20 +3528,17 @@ test('analyzeEventWithRules keeps MLB tickets on clean hit props instead of addi
 
   const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
   const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
-  const selectedCandidates = decision.selectedLegs
-    .map((leg) => candidatePool.find((candidate) => candidate.candidateId === leg.candidateId))
-    .filter(Boolean);
-  const selectedDescriptions = selectedCandidates.map((candidate) => candidate.description).sort();
 
   assert.equal(decision.qualifies, true);
+  assert.equal(decision.recommendation, 'build_single');
   assert.ok(pick);
-  assert.equal(pick.mlbStructureProfile, 'mlb-hit-priority-v2');
-  assert.equal(pick.legs.length, 2);
-  assert.deepEqual(selectedDescriptions, ['Alec Bohm', 'Jose Ramirez']);
-  assert.equal(selectedCandidates.some((candidate) => candidate.family === 'total'), false);
+  assert.equal(pick.mlbStructureProfile, 'mlb-featured-single-v3');
+  assert.equal(pick.legs.length, 1);
+  assert.match(pick.legs[0].label, /Cleveland Guardians/);
+  assert.ok(pick.legs.every((leg) => leg.source?.family !== 'prop' && leg.source?.family !== 'total'));
 });
 
-test('analyzeEventWithRules keeps MLB tickets at 2 legs even when a clean third candidate is available', async () => {
+test('analyzeEventWithRules (v3) posts a single MLB +1.5 run line when no moneyline favourite qualifies', async () => {
   const startTime = '2026-05-23T20:10:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3610,49 +3557,23 @@ test('analyzeEventWithRules keeps MLB tickets at 2 legs even when a clean third 
       teamSportsH2hPolicy: 'fallback_only'
     }
   };
+  const base = {
+    sportKey: 'mlb',
+    homeTeam: 'New York Mets',
+    awayTeam: 'Los Angeles Dodgers',
+    displayName: 'Los Angeles Dodgers vs New York Mets',
+    startTime,
+    fetchedAt,
+    source: 'snapshot'
+  };
+  const px = (price) => [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price }];
   const quotes = [
-    {
-      sportKey: 'mlb',
-      homeTeam: 'New York Mets',
-      awayTeam: 'Los Angeles Dodgers',
-      displayName: 'Los Angeles Dodgers vs New York Mets',
-      startTime,
-      market: 'batter_hits',
-      outcomeName: '1+ Hit',
-      description: 'Mookie Betts',
-      point: null,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.46 }]
-    },
-    {
-      sportKey: 'mlb',
-      homeTeam: 'New York Mets',
-      awayTeam: 'Los Angeles Dodgers',
-      displayName: 'Los Angeles Dodgers vs New York Mets',
-      startTime,
-      market: 'batter_hits',
-      outcomeName: '1+ Hit',
-      description: 'Francisco Lindor',
-      point: null,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.44 }]
-    },
-    {
-      sportKey: 'mlb',
-      homeTeam: 'New York Mets',
-      awayTeam: 'Los Angeles Dodgers',
-      displayName: 'Los Angeles Dodgers vs New York Mets',
-      startTime,
-      market: 'pitcher_strikeouts',
-      outcomeName: 'Over',
-      description: 'Kodai Senga',
-      point: 4.5,
-      fetchedAt,
-      source: 'snapshot',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.44 }]
-    }
+    // Near-even game: neither moneyline is ≤1.65, so the protected +1.5 is the only qualifying single.
+    { ...base, market: 'h2h', outcomeName: 'New York Mets', description: '', point: null, prices: px(1.8) },
+    { ...base, market: 'h2h', outcomeName: 'Los Angeles Dodgers', description: '', point: null, prices: px(2.05) },
+    { ...base, market: 'spreads', outcomeName: 'New York Mets', description: '', point: -1.5, prices: px(2.7) },
+    { ...base, market: 'spreads', outcomeName: 'Los Angeles Dodgers', description: '', point: 1.5, prices: px(1.5) },
+    { ...base, market: 'batter_hits', outcomeName: '1+ Hit', description: 'Mookie Betts', point: null, prices: px(1.44) }
   ];
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
   const context = {
@@ -3667,19 +3588,17 @@ test('analyzeEventWithRules keeps MLB tickets at 2 legs even when a clean third 
 
   const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
   const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
-  const selectedCandidates = decision.selectedLegs
-    .map((leg) => candidatePool.find((candidate) => candidate.candidateId === leg.candidateId))
-    .filter(Boolean);
 
   assert.equal(decision.qualifies, true);
+  assert.equal(decision.recommendation, 'build_single');
   assert.ok(pick);
-  assert.equal(pick.mlbStructureProfile, 'mlb-hit-priority-v2');
-  assert.equal(pick.legs.length, 2);
-  assert.equal(selectedCandidates.filter((candidate) => candidate.market === 'batter_hits').length, 2);
-  assert.equal(selectedCandidates.some((candidate) => candidate.market === 'pitcher_strikeouts'), false);
+  assert.equal(pick.mlbStructureProfile, 'mlb-featured-single-v3');
+  assert.equal(pick.legs.length, 1);
+  assert.match(pick.legs[0].label, /Los Angeles Dodgers \+1\.5/);
+  assert.ok(pick.legs.every((leg) => leg.source?.family !== 'prop' && leg.source?.family !== 'total'));
 });
 
-test('analyzeEventWithRules allows a current MLB hit-plus-strikeout build when the pairing stays on one side', async () => {
+test('analyzeEventWithRules (v3) skips MLB hit-plus-strikeout prop boards with no featured single', async () => {
   const startTime = '2026-05-23T20:10:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3761,19 +3680,15 @@ test('analyzeEventWithRules allows a current MLB hit-plus-strikeout build when t
 
   const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
   const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
-  const selectedCandidates = decision.selectedLegs
-    .map((leg) => candidatePool.find((candidate) => candidate.candidateId === leg.candidateId))
-    .filter(Boolean);
 
-  assert.equal(decision.qualifies, true);
-  assert.ok(pick);
-  assert.equal(pick.legs.length, 2);
-  assert.equal(selectedCandidates.filter((candidate) => candidate.market === 'batter_hits').length, 1);
-  assert.equal(selectedCandidates.filter((candidate) => candidate.market === 'pitcher_strikeouts').length, 1);
-  assert.deepEqual(new Set(selectedCandidates.map((candidate) => candidate.mlbTeamSide)), new Set(['home']));
+  // v3 no longer builds hit+strikeout prop multis; with no featured single available the
+  // event is skipped.
+  assert.equal(decision.qualifies, false);
+  assert.equal(decision.recommendation, 'no_bet');
+  assert.equal(pick, null);
 });
 
-test('analyzeEventWithRules avoids same-team MLB hit pairs when lineup-side metadata is available', async () => {
+test('analyzeEventWithRules (v3) skips MLB when only hit props are available (no featured single)', async () => {
   const startTime = '2026-05-23T20:25:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3855,15 +3770,12 @@ test('analyzeEventWithRules avoids same-team MLB hit pairs when lineup-side meta
 
   const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
   const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
-  const selectedCandidates = decision.selectedLegs
-    .map((leg) => candidatePool.find((candidate) => candidate.candidateId === leg.candidateId))
-    .filter(Boolean);
-  const selectedTeams = new Set(selectedCandidates.map((candidate) => candidate.mlbTeamSide));
 
-  assert.equal(decision.qualifies, true);
-  assert.ok(pick);
-  assert.equal(pick.legs.length, 2);
-  assert.equal(selectedTeams.size, 2);
+  // v3 drops props from the MLB pool entirely, so a hits-only board offers no qualifying
+  // featured single and the event is skipped.
+  assert.equal(decision.qualifies, false);
+  assert.equal(decision.recommendation, 'no_bet');
+  assert.equal(pick, null);
 });
 
 test('analyzeEventWithRules keeps accepted 3-leg NRL combos publishable through pick construction', async () => {
@@ -4677,7 +4589,7 @@ test('runAnalysisJob blocks MLB prop analysis when pre-pick weather research fla
   assert.equal(result.considered, 0);
 });
 
-test('runAnalysisJob removes non-starter MLB strikeout props and non-roster MLB props before analysis', async (t) => {
+test('runAnalysisJob removes non-starter MLB strikeout props and non-roster MLB props before analysis', { skip: 'Obsolete under MLB v3 featured-single profile: props are dropped from the MLB pool, so the prop-research lineup path is dormant. Rewrite or remove in a follow-up.' }, async (t) => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sportstips-analysis-mlb-official-filter-'));
   t.after(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
@@ -4934,7 +4846,7 @@ test('runAnalysisJob removes non-starter MLB strikeout props and non-roster MLB 
   assert.deepEqual([...analyzedCandidates].sort(), ['Aaron Judge', 'Gerrit Cole', 'Rafael Devers']);
 });
 
-test('runAnalysisJob blocks late MLB batter props when the official batting order is still missing', async (t) => {
+test('runAnalysisJob blocks late MLB batter props when the official batting order is still missing', { skip: 'Obsolete under MLB v3 featured-single profile: MLB no longer uses batter props, so the lineup-lock path is dormant. Rewrite or remove in a follow-up.' }, async (t) => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sportstips-analysis-mlb-lineup-lock-'));
   t.after(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
@@ -5175,7 +5087,7 @@ test('runAnalysisJob blocks late MLB batter props when the official batting orde
   assert.deepEqual([...analyzedCandidates].sort(), ['Gerrit Cole', 'Rafael Devers']);
 });
 
-test('runAnalysisJob allows late MLB batter props when the official batting order is missing but RotoWire projects the batter to start', async (t) => {
+test('runAnalysisJob allows late MLB batter props when the official batting order is missing but RotoWire projects the batter to start', { skip: 'Obsolete under MLB v3 featured-single profile: MLB no longer uses batter props, so the RotoWire projection path is dormant. Rewrite or remove in a follow-up.' }, async (t) => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sportstips-analysis-mlb-rotowire-allow-'));
   t.after(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
@@ -5439,7 +5351,7 @@ test('runAnalysisJob allows late MLB batter props when the official batting orde
   assert.match(analyzedCandidates.find((candidate) => candidate.description === 'Aaron Judge')?.researchReasons?.join(' | ') || '', /RotoWire expected lineup/i);
 });
 
-test('runAnalysisJob blocks MLB batter props when RotoWire projected lineup excludes the batter inside the lineup lock window', async (t) => {
+test('runAnalysisJob blocks MLB batter props when RotoWire projected lineup excludes the batter inside the lineup lock window', { skip: 'Obsolete under MLB v3 featured-single profile: MLB no longer uses batter props, so the RotoWire exclusion path is dormant. Rewrite or remove in a follow-up.' }, async (t) => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sportstips-analysis-mlb-rotowire-block-'));
   t.after(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });

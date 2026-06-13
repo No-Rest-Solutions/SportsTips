@@ -7,6 +7,14 @@ import { loadAnalysisAgentBundle } from './analysis-agent-bundle.mjs';
 const PASSING_CHECKLIST_VALUES = new Set(['pass', 'not_applicable']);
 const MLB_STRUCTURE_PROFILE_LEGACY = 'mlb-hit-led-v1';
 const MLB_STRUCTURE_PROFILE_HIT_PRIORITY = 'mlb-hit-priority-v2';
+// v3 (default): featured-market singles. Sportsbet posts batter/pitcher props only
+// near first pitch, so upcoming games carry featured markets only. The old hit-priority
+// profile required props -> MLB almost never posted pre-game, and two 1+ hit props are
+// negative-EV (~0.62^2 ≈ 38% vs ~42% breakeven at 1.55×1.55). v3 bets the single
+// highest-probability featured market that is reliably available: a moneyline favourite
+// or the protected +1.5 run line. MLB is the hardest major to beat, so this is harm
+// reduction + selectivity, not a guaranteed edge — keep stakes small and forward-test.
+const MLB_STRUCTURE_PROFILE_FEATURED_SINGLE = 'mlb-featured-single-v3';
 const MLB_SAFE_HIT_RUNG = 1;
 // Tightened from 1.72: at 1.55, implied probability ≥65%, filtering out fringe batters.
 // A 2-leg hit multi at 1.55×1.55 ≈ 2.4x — still viable odds with much better hit rate.
@@ -14,6 +22,13 @@ const MLB_SAFE_HIT_PRICE_MAX = 1.55;
 // Tightened from 5.5: quality starters in 5-6 innings average 4-5 Ks; 5.5+ is a stretch line.
 const MLB_SAFE_STRIKEOUT_LINE_MAX = 4.5;
 const MLB_SAFE_STRIKEOUT_PRICE_MAX = 1.75;
+// Featured-single profile (v3) thresholds.
+// Moneyline favourite: price ≤1.65 ⇒ implied ≥60%, i.e. only genuine favourites.
+const MLB_SAFE_ML_PRICE_MAX = 1.65;
+// Protected +1.5 run line (team gets +1.5 runs): floor avoids juiced near-certainties
+// that add no value, ceiling keeps it to a real protected line, not a disguised favourite -1.5.
+const MLB_PROTECTED_RUNLINE_PRICE_MIN = 1.45;
+const MLB_PROTECTED_RUNLINE_PRICE_MAX = 2.05;
 
 function normalizeText(value) {
   return String(value || '')
@@ -355,8 +370,11 @@ function isTennisSport(sportKey) {
 }
 
 function shouldPreferPlayerProps(eventContext) {
+  // MLB (v3 featured-single profile) intentionally bets the moneyline/run line, so it must
+  // NOT prefer props or penalise h2h. Tennis is H2H-first. Both are excluded.
   return eventContext?.generatorConfig?.teamSportsH2hPolicy === 'fallback_only'
-    && !isTennisSport(eventContext?.sportKey);
+    && !isTennisSport(eventContext?.sportKey)
+    && !isSport(eventContext, 'mlb');
 }
 
 function isSport(eventContext, key) {
@@ -672,16 +690,56 @@ function isAllowedNbaCandidate(candidate) {
   return true;
 }
 
-function isAllowedMlbCandidate(candidate) {
+function getMlbRunLinePoint(candidate) {
+  if (!isSpreadMarket(candidate?.market)) {
+    return null;
+  }
+
+  const point = toNumber(candidate?.point);
+
+  if (point !== null) {
+    return point;
+  }
+
+  const match = ` ${getCandidateRawSearchText(candidate)} `.match(/([+-]\d+(?:\.\d+)?)/);
+  const numeric = match ? Number(match[1]) : Number.NaN;
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function isMlbFavouriteMoneyline(candidate) {
+  if (normalizeText(candidate?.market) !== 'h2h') {
+    return false;
+  }
+
+  const bestPrice = toNumber(candidate?.bestPrice);
+  // Price ≤1.65 ⇒ implied ≥60.6%: only genuine favourites, never coin-flip/underdog moneylines.
+  return bestPrice !== null && bestPrice > 1 && bestPrice <= MLB_SAFE_ML_PRICE_MAX;
+}
+
+function isMlbProtectedRunLineSingle(candidate) {
+  const point = getMlbRunLinePoint(candidate);
+  const bestPrice = toNumber(candidate?.bestPrice);
+
+  // Only the team GETTING +1.5 runs (point > 0) — never the -1.5 favourite needing to win by 2+.
+  return point !== null
+    && point > 0
+    && bestPrice !== null
+    && bestPrice >= MLB_PROTECTED_RUNLINE_PRICE_MIN
+    && bestPrice <= MLB_PROTECTED_RUNLINE_PRICE_MAX;
+}
+
+function isAllowedMlbFeaturedSingle(candidate) {
   if (!candidate) {
     return false;
   }
 
-  if (candidate.family !== 'prop') {
-    return false;
-  }
+  return isMlbFavouriteMoneyline(candidate) || isMlbProtectedRunLineSingle(candidate);
+}
 
-  return isConservativeMlbHitCandidate(candidate) || isConservativeMlbStrikeoutCandidate(candidate);
+function isAllowedMlbCandidate(candidate) {
+  // Default (featured-single v3) profile: bet the reliably-available featured markets,
+  // not late-posting props. See MLB_STRUCTURE_PROFILE_FEATURED_SINGLE.
+  return isAllowedMlbFeaturedSingle(candidate);
 }
 
 function isAllowedLegacyMlbCandidate(candidate) {
@@ -949,47 +1007,18 @@ function getMlbStructureProfile(subject) {
     return explicitProfile;
   }
 
-  return isSport(subject, 'mlb') ? MLB_STRUCTURE_PROFILE_HIT_PRIORITY : '';
+  return isSport(subject, 'mlb') ? MLB_STRUCTURE_PROFILE_FEATURED_SINGLE : '';
 }
 
 function usesLegacyMlbStructureProfile(subject) {
   return getMlbStructureProfile(subject) === MLB_STRUCTURE_PROFILE_LEGACY;
 }
 
-function isSafeCurrentMlbCombo(candidates) {
-  const comboProfile = getComboProfile(candidates);
-
-  if (comboProfile.propCount !== candidates.length || candidates.length < 2 || candidates.length > 5) {
-    return false;
-  }
-
-  if (comboProfile.h2hCount > 0
-    || comboProfile.spreadCount > 0
-    || comboProfile.mlbTotalCount > 0
-    || comboProfile.mlbRbiCount > 0) {
-    return false;
-  }
-
-  if (!candidates.every((candidate) => isAllowedMlbCandidate(candidate))) {
-    return false;
-  }
-
-  if (comboProfile.mlbHitCount === 2) {
-    return !hasSameTeamMlbHitPair(candidates);
-  }
-
-  if (comboProfile.mlbHitCount === 1 && comboProfile.mlbStrikeoutCount === 1) {
-    const hitCandidate = candidates.find((candidate) => getMlbPropSubtype(candidate) === 'hit');
-    const strikeoutCandidate = candidates.find((candidate) => getMlbPropSubtype(candidate) === 'strikeout');
-    const hitTeamKey = getMlbCandidateTeamKey(hitCandidate);
-    const strikeoutTeamKey = getMlbCandidateTeamKey(strikeoutCandidate);
-
-    return Boolean(hitTeamKey)
-      && Boolean(strikeoutTeamKey)
-      && hitTeamKey === strikeoutTeamKey;
-  }
-
-  return false;
+function isSafeFeaturedMlbCombo(candidates) {
+  // v3: exactly one reliably-available featured leg — a favourite moneyline or a
+  // protected +1.5 run line. No multis (same-game featured legs are correlated) and
+  // no late-posting props.
+  return candidates.length === 1 && isAllowedMlbFeaturedSingle(candidates[0]);
 }
 
 function getAflPropSubtype(candidate) {
@@ -1085,11 +1114,8 @@ function isSafeMlbCombo(candidates, eventContext) {
     return comboProfile.mlbHitCount + comboProfile.mlbStrikeoutCount === candidates.length;
   }
 
-  if (candidates.length < 2 || candidates.length > 5) {
-    return false;
-  }
-
-  return isSafeCurrentMlbCombo(candidates);
+  // Default featured-single profile (v3).
+  return isSafeFeaturedMlbCombo(candidates);
 }
 
 function capMlbCandidatePool(candidatePool, candidateLimit) {
@@ -2253,7 +2279,8 @@ function getLegRange(eventContextOrSportKey) {
   }
 
   if (normalizedSportKey === 'mlb') {
-    return { min: 2, max: 5, preferred: 3 };
+    // v3 featured-single profile: one favourite moneyline or protected +1.5 run line.
+    return { min: 1, max: 1, preferred: 1 };
   }
 
   if (normalizedSportKey.startsWith('soccer')) {
@@ -2538,7 +2565,7 @@ export async function analyzeEventWithRules(context, eventContext, candidatePool
     })
     : [];
   const mlbSafeAcceptedCombos = isSport(eventContext, 'mlb')
-    ? noH2hAcceptedCombos.filter((combo) => isSafeMlbCombo(combo.candidates, eventContext))
+    ? acceptedCombos.filter((combo) => isSafeMlbCombo(combo.candidates, eventContext))
     : [];
   const mlbPreferredAcceptedCombos = isSport(eventContext, 'mlb')
     ? mlbSafeAcceptedCombos.filter((combo) => combo.candidates.length >= legRange.preferred)
@@ -2567,10 +2594,10 @@ export async function analyzeEventWithRules(context, eventContext, candidatePool
       eventContext,
       usesLegacyMlbStructureProfile(eventContext)
         ? 'MLB rules require at least two clean hit props with no totals, H2H, or RBI fillers.'
-        : 'MLB rules require two verified 1+ hit props from separate lineups or one verified hit plus one conservative same-side strikeout.',
+        : 'MLB rules require a single favourite moneyline (≤1.65) or a protected +1.5 run-line leg.',
       usesLegacyMlbStructureProfile(eventContext)
         ? 'Rules mode skipped the event because the current market scan did not offer a clean MLB hit-led structure.'
-        : 'Rules mode skipped the event because the current market scan did not offer a clean 2-leg MLB hit pair or same-side hit-plus-strikeout build.'
+        : 'Rules mode skipped the event because no qualifying favourite moneyline or protected +1.5 run line was available.'
     );
   }
 
