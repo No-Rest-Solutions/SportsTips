@@ -559,125 +559,6 @@ function rankCandidates(candidates, generatorConfig, eventContext = null) {
   });
 }
 
-function areCompatible(left, right) {
-  if (left.key === right.key) {
-    return false;
-  }
-
-  if (left.conflictGroup === right.conflictGroup) {
-    return false;
-  }
-
-  if (left.family === 'side' && right.family === 'side') {
-    return false;
-  }
-
-  if (left.family === 'total' && right.family === 'total') {
-    return false;
-  }
-
-  if (left.subjectKey === right.subjectKey && left.family === 'prop' && right.family === 'prop') {
-    return false;
-  }
-
-  return true;
-}
-
-function scorePair(left, right, generatorConfig, eventContext = null) {
-  const preferPlayerProps = shouldPreferPlayerProps(eventContext);
-  const propCount = [left, right].filter((candidate) => candidate.family === 'prop').length;
-  const h2hCount = [left, right].filter((candidate) => candidate.market === 'h2h').length;
-
-  let score = computeCandidateScore(left, generatorConfig, eventContext) + computeCandidateScore(right, generatorConfig, eventContext);
-
-  if (left.family !== right.family) {
-    score += 2.5;
-  }
-
-  if (left.family === 'prop' || right.family === 'prop') {
-    score += preferPlayerProps ? 2.2 : 1.2;
-  }
-
-  if (preferPlayerProps && propCount === 2) {
-    score += 2.4;
-  }
-
-  if (preferPlayerProps && h2hCount > 0) {
-    score -= propCount > 0 ? 2.5 * h2hCount : 5 * h2hCount;
-  }
-
-  return score;
-}
-
-function chooseMainPair(candidates, generatorConfig, eventContext) {
-  const ranked = rankCandidates(candidates, generatorConfig, eventContext).slice(0, 14);
-  let best = null;
-
-  for (let leftIndex = 0; leftIndex < ranked.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < ranked.length; rightIndex += 1) {
-      const left = ranked[leftIndex];
-      const right = ranked[rightIndex];
-
-      if (!areCompatible(left, right)) {
-        continue;
-      }
-
-      const pairScore = scorePair(left, right, generatorConfig, eventContext);
-
-      if (pairScore === null) {
-        continue;
-      }
-
-      if (!best || pairScore > best.score) {
-        best = {
-          score: pairScore,
-          legs: [left, right]
-        };
-      }
-    }
-  }
-
-  return best;
-}
-
-function chooseBackupCandidate(candidates, mainLegs, generatorConfig, eventContext) {
-  const mainKeys = new Set(mainLegs.map((leg) => leg.key));
-  const ranked = rankCandidates(candidates, generatorConfig, eventContext);
-
-  for (const candidate of ranked) {
-    if (mainKeys.has(candidate.key)) {
-      continue;
-    }
-
-    const replacesFirst = areCompatible(candidate, mainLegs[1]);
-    const replacesSecond = areCompatible(candidate, mainLegs[0]);
-
-    if (replacesFirst || replacesSecond) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-function buildLeg(candidate, index) {
-  return {
-    id: `leg-${index + 1}`,
-    label: candidate.label,
-    status: 'active',
-    locked: false,
-    rationale: candidate.rationale,
-    source: {
-      type: candidate.source,
-      market: candidate.market,
-      booksChecked: candidate.booksChecked,
-      outcomeName: candidate.outcomeName,
-      description: candidate.description,
-      point: candidate.point ?? null
-    }
-  };
-}
-
 function buildReplacementCandidate(candidate) {
   return {
     id: `backup-${candidate.key}`,
@@ -692,16 +573,6 @@ function buildReplacementCandidate(candidate) {
       point: candidate.point ?? null
     }
   };
-}
-
-function getConfidence(legs) {
-  const minimumBooks = Math.min(...legs.map((leg) => leg.booksChecked));
-
-  if (minimumBooks >= 3) {
-    return 'high';
-  }
-
-  return 'medium';
 }
 
 function normalizeBookmakerKey(price) {
@@ -744,45 +615,6 @@ export function mergeQuoteEntries(quotes) {
       prices: [...dedupedPrices.values()],
       source: quote.source || existing?.source || 'web-scrape'
     });
-  }
-
-  return [...grouped.values()];
-}
-
-export function buildQuoteEntriesFromOddsEvent(event) {
-  const grouped = new Map();
-
-  for (const bookmaker of event.bookmakers || []) {
-    for (const market of bookmaker.markets || []) {
-      for (const outcome of market.outcomes || []) {
-        const price = toNumber(outcome.price);
-
-        if (price === null || price <= 1) {
-          continue;
-        }
-
-        const quote = {
-          sportKey: event.sport_key,
-          market: market.key,
-          homeTeam: event.home_team,
-          awayTeam: event.away_team,
-          outcomeName: outcome.name,
-          description: outcome.description || '',
-          point: outcome.point ?? null,
-          prices: []
-        };
-        const key = buildQuoteKey(quote);
-        const entry = grouped.get(key) || quote;
-
-        entry.prices.push({
-          bookmakerKey: bookmaker.key,
-          bookmakerTitle: bookmaker.title,
-          price
-        });
-
-        grouped.set(key, entry);
-      }
-    }
   }
 
   return [...grouped.values()];
@@ -845,52 +677,6 @@ export function buildCandidatePoolForEvent(eventContext, quotes, maxCandidates =
       ...candidate,
       candidateId: `candidate-${index + 1}`
     }));
-}
-
-export function buildGeneratedPickForEvent(eventContext, quotes) {
-  const candidates = quotes
-    .map((quote) => buildCandidateFromQuote(quote, eventContext))
-    .filter(Boolean);
-
-  const mainPair = chooseMainPair(candidates, eventContext.generatorConfig, eventContext);
-
-  if (!mainPair) {
-    return null;
-  }
-
-  const backup = chooseBackupCandidate(candidates, mainPair.legs, eventContext.generatorConfig, eventContext);
-
-  if (!backup) {
-    return null;
-  }
-
-  const legs = mainPair.legs.map(buildLeg);
-  const replacementCandidate = buildReplacementCandidate(backup);
-  const summary = mainPair.legs.map((leg) => leg.label).join(' + ');
-  const rationale = `Auto-generated from ${mainPair.legs.map((leg) => leg.source).join(' + ')} market support. Backup leg ready: ${backup.label}.`;
-
-  return {
-    id: `${GENERATED_SOURCE}:${eventContext.sportKey}:${eventContext.eventId}`,
-    status: 'pending',
-    sport: eventContext.sportKey,
-    sportLabel: eventContext.sportLabel,
-    event: eventContext.eventName,
-    homeTeam: eventContext.homeTeam,
-    awayTeam: eventContext.awayTeam,
-    startTime: eventContext.startTime,
-    summary,
-    rationale,
-    betType: 'sgm',
-    supportProjection: 'moderate',
-    dataConfidence: getConfidence(mainPair.legs),
-    stakeUnits: Number(eventContext.generatorConfig.stakeUnits || 1),
-    source: GENERATED_SOURCE,
-    legs,
-    replacementTemplate: {
-      candidateLegs: [replacementCandidate],
-      maxOptions: 1
-    }
-  };
 }
 
 export function mergeGeneratedPicks(existingFeed, generatedPicks, state) {

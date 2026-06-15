@@ -1,0 +1,22 @@
+appId: com.redemptory.tippingbot
+productName: Tipping Bot
+asar: true
+asarUnpack:
+  - automation/discord-webhooks/src/**/*
+files:
+  - package.json
+  - automation/discord-webhooks/**/*
+extraMetadata:
+  main: automation/discord-webhooks/desktop/bootstrap.cjs
+directories:
+  output: dist/tipping-bot
+  buildResources: automation/discord-webhooks/build-resources
+win:
+  icon: automation/discord-webhooks/build-resources/icon.ico
+  signAndEditExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: Tipping Bot Portable.exe

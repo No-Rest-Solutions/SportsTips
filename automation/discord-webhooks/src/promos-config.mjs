@@ -62,6 +62,37 @@ function validateConfig(config) {
     if (!Number.isFinite(promo.maxOdds) || promo.maxOdds < promo.minOdds) {
       throw new Error(`Promo ${promo.id} maxOdds must be >= minOdds`);
     }
+    if (promo.webhook !== undefined && typeof promo.webhook !== 'string') {
+      throw new Error(`Promo ${promo.id} webhook must be a string channel key`);
+    }
+    validatePromoSettlementRule(promo);
+  }
+}
+
+const PROMO_SETTLEMENT_RULE_TYPES = new Set(['standard', 'leg-insurance', 'margin-forgiveness']);
+
+/**
+ * Validate a promo's optional settlementRule.
+ * @param {Object} promo
+ */
+function validatePromoSettlementRule(promo) {
+  const rule = promo.settlementRule;
+  if (rule === undefined) {
+    return; // defaults to standard at settlement time
+  }
+  if (typeof rule !== 'object' || rule === null) {
+    throw new Error(`Promo ${promo.id} settlementRule must be an object`);
+  }
+  if (!PROMO_SETTLEMENT_RULE_TYPES.has(String(rule.type))) {
+    throw new Error(`Promo ${promo.id} settlementRule.type must be one of: ${[...PROMO_SETTLEMENT_RULE_TYPES].join(', ')}`);
+  }
+  if (rule.type === 'leg-insurance' && rule.insuredLegs !== undefined
+    && (!Number.isFinite(rule.insuredLegs) || rule.insuredLegs < 0)) {
+    throw new Error(`Promo ${promo.id} settlementRule.insuredLegs must be a number >= 0`);
+  }
+  if (rule.type === 'margin-forgiveness' && rule.marginTolerance !== undefined
+    && (!Number.isFinite(rule.marginTolerance) || rule.marginTolerance < 0)) {
+    throw new Error(`Promo ${promo.id} settlementRule.marginTolerance must be a number >= 0`);
   }
 }
 

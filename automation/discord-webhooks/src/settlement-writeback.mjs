@@ -52,12 +52,6 @@ function formatUnitsOnly(units, { signed = false } = {}) {
   return `${prefix}${Math.abs(numeric).toFixed(2)}u`;
 }
 
-function formatAudOnly(units, unitSize, { signed = false } = {}) {
-  const numeric = roundToTwo(units * unitSize);
-  const prefix = numeric < 0 ? '-' : signed && numeric > 0 ? '+' : '';
-  return `${prefix}$${Math.abs(numeric).toFixed(2)}`;
-}
-
 function getTimezoneShortName(dateLike, timeZone) {
   const formatter = new Intl.DateTimeFormat('en-AU', {
     timeZone,

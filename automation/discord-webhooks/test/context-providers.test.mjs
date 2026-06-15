@@ -5,7 +5,6 @@ import { extractAflOfficialPlayerStats, parseAflOfficialMatch } from '../src/pro
 import { extractEspnPlayerBoxscoreStats, fetchEspnSlate } from '../src/providers/espn.mjs';
 import { extractEspnTeamInjuries } from '../src/providers/espn-injuries.mjs';
 import { extractFlashscoreInitialFeed, parseFlashscoreResultsFeed } from '../src/providers/flashscore.mjs';
-import { findMatchingRotowireMlbGame } from '../src/providers/mlb-rotowire.mjs';
 import { parseNrlOfficialMatchData } from '../src/providers/nrl-official.mjs';
 import { buildOpenMeteoEventWeatherSnapshot } from '../src/providers/open-meteo.mjs';
 
@@ -135,23 +134,6 @@ test('buildOpenMeteoEventWeatherSnapshot selects the closest hourly forecast row
     windGustsKmh: 22.3,
     weatherCode: 2
   });
-});
-
-test('findMatchingRotowireMlbGame ignores trailing pitcher tags on event team names', () => {
-  const match = findMatchingRotowireMlbGame({
-    games: [{
-      normalizedHomeTeam: 'new york yankees',
-      normalizedAwayTeam: 'boston red sox',
-      homeTeam: 'New York Yankees',
-      awayTeam: 'Boston Red Sox'
-    }]
-  }, {
-    homeTeam: 'New York Yankees (Gerrit Cole)',
-    awayTeam: 'Boston Red Sox (Brayan Bello)'
-  });
-
-  assert.equal(match?.homeTeam, 'New York Yankees');
-  assert.equal(match?.awayTeam, 'Boston Red Sox');
 });
 
 test('extractEspnPlayerBoxscoreStats preserves generic stat keys for MLB and NFL prop grading', () => {

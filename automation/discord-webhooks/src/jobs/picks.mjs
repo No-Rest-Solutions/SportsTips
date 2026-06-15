@@ -11,6 +11,7 @@ import {
 } from '../bot-tracker.mjs';
 import { evaluatePickAgainstBenchmarks } from '../benchmarks.mjs';
 import { buildAutomatedMessage, deleteWebhookMessage, sendWebhookMessage } from '../discord.mjs';
+import { buildEvidenceEmbed, buildEvidenceCsvRows, appendEvidenceCsv } from '../evidence-log.mjs';
 import { formatCancellationPickMessages, formatPicksMessages, formatReplacementPickMessages, formatUnitTrackingMessages } from '../formatters.mjs';
 import {
   buildEventWeatherDisplay,
@@ -2007,6 +2008,20 @@ async function evaluateCandidate(context, pick, now, nextIntervalMs, overrides =
   };
 }
 
+// Build a { legId: bestOdds } map from the latest matched live prices, used to
+// capture closing-line odds on each pre-game recheck (last value before kickoff).
+function buildClosingOddsMap(matchedLegPrices) {
+  const map = {};
+  for (const entry of Array.isArray(matchedLegPrices) ? matchedLegPrices : []) {
+    const legId = String(entry?.legId || '');
+    const odds = toNumber(entry?.bestOdds);
+    if (legId && odds !== null && odds > 1) {
+      map[legId] = odds;
+    }
+  }
+  return map;
+}
+
 function updateTrackedPick(tracking, pickId, trackedPick, now, nextIntervalMs, patch = {}) {
   tracking[pickId] = {
     ...trackedPick,
@@ -2337,13 +2352,27 @@ export async function runPicksJob(context, overrides = {}) {
 
     const nextPregameCheckAt = getNextPregameRecheckAt(publishedPick, now, config);
 
-    if (evaluation.benchmark.accepted && evaluation.publicationResult.qualifies) {
+    // A posted slip is kept as long as it still PASSES the publication checks
+    // (legs available, player available, event on, conditions safe, ticket valid).
+    // We deliberately do NOT re-drop it just because the benchmark/support score
+    // shifted with odds movement — odds at posting time are good enough (#30,
+    // "drop only on availability"). Real problems (leg unavailable, player out,
+    // event postponed, unsafe weather, malformed/structure-invalid ticket) all
+    // surface as publication-check failures and still trigger replace/cancel.
+    if (evaluation.publicationResult.qualifies) {
+      // Capture the latest pre-game leg prices as closing odds for CLV (#29);
+      // by kickoff this holds the last observed price per leg.
+      const closingOddsByLeg = buildClosingOddsMap(evaluation.publicationValidation?.matchedLegPrices);
+
       updateTrackedPick(tracking, pick.id, trackedPick, now, nextIntervalMs, {
         status: nextPregameCheckAt ? 'posted_waiting_for_pregame_recheck' : 'pregame_recheck_passed',
         pregameRecheckedAt: nextPregameCheckAt ? null : now.toISOString(),
         nextCheckAt: nextPregameCheckAt || publishedPick.startTime || null,
         lastValidationStatus: evaluation.publicationValidation?.status || null,
-        lastDecision: nextPregameCheckAt ? 'pregame_recheck_passed_waiting_next_checkpoint' : 'pregame_recheck_passed'
+        ...(Object.keys(closingOddsByLeg).length ? { closingOddsByLeg } : {}),
+        lastDecision: evaluation.benchmark.accepted
+          ? (nextPregameCheckAt ? 'pregame_recheck_passed_waiting_next_checkpoint' : 'pregame_recheck_passed')
+          : 'kept_through_price_movement'
       });
       continue;
     }
@@ -2422,6 +2451,31 @@ export async function runPicksJob(context, overrides = {}) {
           messageId: String(response.id),
           webhookChannel
         });
+      }
+    }
+
+    // Post the per-slip evidence (and log it to CSV) once per posted slip.
+    // Only fires when the slip carries deep-analysis evidence; never breaks posting.
+    if (!dryRun) {
+      try {
+        const evidenceEmbed = buildEvidenceEmbed(pick);
+        if (evidenceEmbed) {
+          const evidenceWebhook = config.discord?.webhooks?.evidence;
+          if (evidenceWebhook) {
+            await sendWebhookMessage(
+              evidenceWebhook,
+              {
+                embeds: [evidenceEmbed],
+                username: config.discord.username,
+                avatar_url: config.discord.avatarUrl || undefined
+              },
+              { dryRun, label: 'evidence' }
+            );
+          }
+          await appendEvidenceCsv(config.__paths.evidenceLogFile, buildEvidenceCsvRows(pick, new Date().toISOString()));
+        }
+      } catch (error) {
+        console.error(`[picks] evidence logging failed for ${pick.id}: ${error.message}`);
       }
     }
   }

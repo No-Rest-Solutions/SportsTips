@@ -49,7 +49,12 @@ const WEBHOOK_FIELDS = [
   'referralsCancelled',
   'referralsMasterlist',
   'unitTracking',
-  'unitReport'
+  'unitReport',
+  'promoAfl',
+  'promoNrl',
+  'promoTennis',
+  'promoSoccer',
+  'evidence'
 ];
 const WEBHOOK_LABELS = {
   slates: 'Slates webhook',
@@ -66,7 +71,12 @@ const WEBHOOK_LABELS = {
   referralsCancelled: 'Cancelled referrals webhook',
   referralsMasterlist: 'Referral masterlist webhook',
   unitTracking: 'Results / Unit Tracking webhook',
-  unitReport: 'Unit Report webhook'
+  unitReport: 'Unit Report webhook',
+  promoAfl: 'AFL promo webhook',
+  promoNrl: 'NRL promo webhook',
+  promoTennis: 'Tennis promo webhook',
+  promoSoccer: 'Soccer promo webhook',
+  evidence: 'Evidence / analysis webhook'
 };
 const APP_NAME = 'Tipping Bot';
 const DEV_WORKSPACE_ROOT = path.resolve(here, '../../../');
@@ -870,6 +880,49 @@ async function forceDailyCheck() {
   };
 }
 
+// Full Scan: one button that runs a complete cycle — refresh + post daily slates
+// (all enabled sports incl. soccer/tennis), generate + re-evaluate picks against
+// the current rules, and settle + post any results. Each job is fault-isolated so
+// one failure doesn't abort the rest.
+async function fullScan() {
+  const config = await loadConfig();
+  const state = await loadState(config.__paths.stateFile);
+  const context = { config, state, dryRun: Boolean(config.dryRun) };
+  const safe = async (label, fn) => {
+    try {
+      return await fn();
+    } catch (error) {
+      console.error(`[full-scan] ${label} failed: ${error.message}`);
+      return { error: error.message };
+    }
+  };
+
+  const slates = await safe('slates', () => runSlatesJob(context, { forceSnapshotRefresh: true }));
+  const analysis = config.analysis?.enabled && config.jobs?.analysis?.enabled
+    ? await safe('analysis', () => runAnalysisJob(context))
+    : null;
+  const picks = await safe('picks', () => runPicksJob(context, { forcePostNow: true }));
+  const results = await safe('results', () => runResultsJob(context));
+  const trackerSummary = await safe('tracker-summary', () => runTrackerSummaryJob(context));
+
+  await saveState(config.__paths.stateFile, state);
+  await refreshUi();
+
+  return {
+    dryRun: context.dryRun,
+    slatesPosted: Number(slates?.posted || 0),
+    analysisGenerated: Number(analysis?.generated || 0),
+    analysisConsidered: Number(analysis?.considered || 0),
+    picksPosted: Number(picks?.posted || 0),
+    picksWatched: Number(picks?.watched || 0),
+    resultsPosted: Number(results?.posted || 0),
+    autoSettled: Number(results?.autoSettled || 0),
+    pendingReview: Number(results?.pendingReview || 0),
+    unitReportPosted: Number(trackerSummary?.posted || 0),
+    errors: [slates, analysis, picks, results, trackerSummary].filter((r) => r?.error).map((r) => r.error)
+  };
+}
+
 async function updateTrackedUnits() {
   const config = await loadConfig();
   const state = await loadState(config.__paths.stateFile);
@@ -944,63 +997,6 @@ async function verifyReferralOffer(payload) {
   return {
     dryRun: context.dryRun,
     ...result
-  };
-}
-
-function buildTestPickPreview() {
-  return {
-    sport: 'mlb',
-    sportLabel: 'MLB',
-    event: 'Webhook Preview | Design Check',
-    summary: 'Joe Mack 1+ Hit + Max Meyer 5+ Strikeouts',
-    betType: 'sgm',
-    stakeUnits: 1,
-    startTime: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
-    publicationValidation: {
-      totalOdds: 1.92
-    },
-    legs: [
-      { label: 'Joe Mack 1+ Hit' },
-      { label: 'Max Meyer 5+ Strikeouts' }
-    ],
-    modelProbability: 0.58,
-    supportScore: 6.8,
-    confidenceTier: 'medium',
-    supportProjection: 'moderate',
-    rationale: 'Manual preview message from the desktop app to verify webhook formatting only. Do not bet this test slip.'
-  };
-}
-
-async function sendTestPick() {
-  const config = await loadConfig();
-  const dateKey = getDateKey(new Date(), config.timezone);
-  const previewPick = buildTestPickPreview();
-  const messages = formatPicksMessages([previewPick], dateKey);
-  const webhookChannel = resolvePickWebhookChannel(config, previewPick);
-  const webhookUrl = getWebhookUrlByChannel(config.discord.webhooks, webhookChannel);
-
-  for (const message of messages) {
-    const automatedMessage = buildAutomatedMessage(config, 'picks', message, { sport: previewPick.sport });
-
-    await sendWebhookMessage(
-      webhookUrl,
-      {
-        content: automatedMessage.content,
-        embeds: automatedMessage.embeds,
-        username: config.discord.username,
-        avatar_url: config.discord.avatarUrl || undefined,
-        allowed_mentions: automatedMessage.allowedMentions
-      },
-      {
-        dryRun: Boolean(config.dryRun),
-        label: 'test pick preview'
-      }
-    );
-  }
-
-  return {
-    posted: messages.length,
-    dryRun: Boolean(config.dryRun)
   };
 }
 
@@ -1294,6 +1290,7 @@ ipcMain.handle('desktop:save-settings', (_, payload) => saveDesktopSettings(payl
 ipcMain.handle('desktop:settle-pick-manually', (_, payload) => settlePickManually(payload));
 ipcMain.handle('desktop:reanalyze-slip', (_, payload) => reanalyzeSlip(payload));
 ipcMain.handle('desktop:analyze-all-slips', () => reanalyzeAllSlips());
+ipcMain.handle('desktop:full-scan', () => fullScan());
 ipcMain.handle('desktop:apply-reanalyzed-pick', (_, payload) => applyReanalyzedPick(payload));
 ipcMain.handle('desktop:open-config', async () => {
   const status = await getDesktopStatus();

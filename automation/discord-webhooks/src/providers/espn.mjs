@@ -63,13 +63,28 @@ function parseLinescores(competitor) {
     : [];
 }
 
-function parseEvent(event) {
+function competitorName(competitor) {
+  return competitor?.team?.displayName
+    || competitor?.athlete?.displayName
+    || competitor?.athlete?.fullName
+    || competitor?.athlete?.shortName
+    || '';
+}
+
+function competitorId(competitor) {
+  return competitor?.team?.id || competitor?.athlete?.id || '';
+}
+
+export function parseEvent(event) {
   const competition = event.competitions?.[0];
   const competitors = competition?.competitors || [];
-  const home = competitors.find((item) => item.homeAway === 'home');
-  const away = competitors.find((item) => item.homeAway === 'away');
+  // Team sports tag competitors home/away; individual sports (tennis) don't, so
+  // fall back to positional order and read athlete names — without this, tennis
+  // events have no team names and never match a pick at settlement time.
+  const home = competitors.find((item) => item.homeAway === 'home') || competitors[0];
+  const away = competitors.find((item) => item.homeAway === 'away') || competitors[1];
   const name = home && away
-    ? `${away.team.displayName} vs ${home.team.displayName}`
+    ? `${competitorName(away)} vs ${competitorName(home)}`
     : event.name;
   const venue = competition?.venue || {};
   const venueAddress = venue.address || {};
@@ -79,10 +94,10 @@ function parseEvent(event) {
     id: event.id,
     name,
     startTime: event.date,
-    homeTeamId: home?.team?.id || '',
-    homeTeam: home?.team?.displayName || '',
-    awayTeamId: away?.team?.id || '',
-    awayTeam: away?.team?.displayName || '',
+    homeTeamId: competitorId(home),
+    homeTeam: competitorName(home),
+    awayTeamId: competitorId(away),
+    awayTeam: competitorName(away),
     homeScore: toScore(home?.score),
     awayScore: toScore(away?.score),
     homeLinescores: parseLinescores(home),

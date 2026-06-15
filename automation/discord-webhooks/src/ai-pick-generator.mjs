@@ -277,6 +277,25 @@ function getRecommendedStakeUnits(eventContext, bankrollContext, combo) {
     stakeUnits -= 0.5;
   }
 
+  // Deep-analysis evidence makes staking dynamic: when every leg carries strong
+  // supporting evidence (high buffer / hit-rate / form edge) lean in; when the
+  // evidence is thin (but still passing) pull back. No-op when evidence is absent
+  // (deep analysis off), so legacy sizing is unchanged.
+  const evidenceScores = combo.candidates
+    .map((candidate) => toNumber(candidate.evidenceScore))
+    .filter((value) => value !== null);
+
+  if (evidenceScores.length > 0 && evidenceScores.length === combo.candidates.length) {
+    const averageEvidence = evidenceScores.reduce((sum, value) => sum + value, 0) / evidenceScores.length;
+    const minEvidence = Math.min(...evidenceScores);
+
+    if (averageEvidence >= 3 && minEvidence >= 2 && stakeUnits < stakeCeiling) {
+      stakeUnits += 0.5;
+    } else if (averageEvidence < 1 && stakeUnits > minimumStakeUnits) {
+      stakeUnits -= 0.5;
+    }
+  }
+
   return roundStakeUnits(Math.max(minimumStakeUnits, Math.min(stakeUnits, stakeCeiling)));
 }
 
@@ -772,25 +791,6 @@ function filterCandidatePoolForSport(eventContext, candidatePool) {
   }
 
   return candidatePool;
-}
-
-function isAflPromoDay(eventContext) {
-  if (!isSport(eventContext, 'afl') || !eventContext?.startTime) {
-    return false;
-  }
-
-  const start = new Date(eventContext.startTime);
-
-  if (Number.isNaN(start.getTime())) {
-    return false;
-  }
-
-  const weekday = new Intl.DateTimeFormat('en-AU', {
-    timeZone: 'Australia/Sydney',
-    weekday: 'short'
-  }).format(start);
-
-  return weekday === 'Sat' || weekday === 'Sun';
 }
 
 function isNbaHighStakes(eventContext) {
@@ -2624,7 +2624,11 @@ export async function analyzeEventWithRules(context, eventContext, candidatePool
     || noH2hAcceptedCombos[0]
     || propLedAcceptedCombos[0]
     || acceptedCombos[0];
-  const forcedFallbackCombo = bestAcceptedCombo
+  // With the deep-evidence gate on, never force a sub-benchmark fallback combo:
+  // if nothing passes the benchmark from evidence-supported legs, it's a NO BET
+  // (quality over volume). Otherwise keep the legacy thin-market fallback.
+  const requireLegEvidence = Boolean(eventContext?.deepAnalysis?.requireLegEvidence);
+  const forcedFallbackCombo = (bestAcceptedCombo || requireLegEvidence)
     ? null
     : selectForcedSameEventFallbackCombo(eventContext, evaluatedCombos);
   const selectedCombo = bestAcceptedCombo || forcedFallbackCombo;
@@ -2742,11 +2746,22 @@ export function buildPickFromAnalysisDecision(eventContext, candidatePool, decis
   const legObjects = selectedLegs.map((item, index) => ({
     id: `leg-${index + 1}`,
     label: item.candidate.label,
+    odds: toNumber(item.candidate.bestPrice),
     modelProbability: toNumber(item.decision.modelProbability),
     status: 'active',
     locked: false,
     onTab: isCandidateOnTab(item.candidate, tabMarkets),
     rationale: item.decision.rationale || item.candidate.rationale,
+    // Deep-analysis evidence (present when analysis.deepAnalysis is enabled) so it
+    // can be surfaced in the evidence channel + CSV review log.
+    evidence: item.candidate.evidenceStatus
+      ? {
+        status: item.candidate.evidenceStatus,
+        score: toNumber(item.candidate.evidenceScore),
+        reason: item.candidate.evidenceReason || '',
+        type: item.candidate.evidenceType || ''
+      }
+      : null,
     source: {
       type: item.candidate.source,
       market: item.candidate.market,

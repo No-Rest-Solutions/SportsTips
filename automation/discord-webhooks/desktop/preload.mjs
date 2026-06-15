@@ -14,5 +14,6 @@ contextBridge.exposeInMainWorld('sportsTipsDesktop', {
   reanalyzeSlip: (payload) => ipcRenderer.invoke('desktop:reanalyze-slip', payload),
   applyReanalyzedPick: (payload) => ipcRenderer.invoke('desktop:apply-reanalyzed-pick', payload),
   analyzeAllSlips: () => ipcRenderer.invoke('desktop:analyze-all-slips'),
+  fullScan: () => ipcRenderer.invoke('desktop:full-scan'),
   openConfig: () => ipcRenderer.invoke('desktop:open-config')
 });

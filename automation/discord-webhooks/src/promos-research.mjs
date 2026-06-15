@@ -328,8 +328,13 @@ export async function getResearchSummary(sport, legs) {
 
     for (const leg of legs) {
       const entity = leg.player || leg.team;
-      const confidence = await calculateResearchConfidence(sport, entity, legs);
-      
+      // Prefer the leg's own market-derived confidence (real signal from the
+      // live snapshot). Only fall back to the slower form/injury research when a
+      // leg arrives without one.
+      const confidence = Number.isFinite(leg.confidence)
+        ? leg.confidence
+        : await calculateResearchConfidence(sport, entity, legs);
+
       summary.details.push({
         entity,
         confidence,

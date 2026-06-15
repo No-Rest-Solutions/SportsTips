@@ -412,20 +412,6 @@ async function loadTrackerRows(config, timestamp = new Date().toISOString()) {
   };
 }
 
-function buildSpecificLegLost(pick) {
-  if (Array.isArray(pick?.failedLegs) && pick.failedLegs.length) {
-    return pick.failedLegs.map((item) => normalizeText(item)).filter(Boolean).join(' | ');
-  }
-
-  const direct = normalizeText(pick?.failedLeg || pick?.failedLegLabel || '');
-
-  if (direct) {
-    return direct;
-  }
-
-  return String(pick?.status || '').toLowerCase() === 'loss' ? 'unknown' : '';
-}
-
 function buildPostedTransactions(config, picks, timestamp) {
   const trackerConfig = getTrackerConfig(config);
 

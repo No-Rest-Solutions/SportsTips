@@ -57,6 +57,7 @@
           <button id="review-results" class="secondary-button" type="button">Grade Results</button>
           <button id="reanalyze-slip-btn" class="secondary-button" type="button">Re-Analyze Slip</button>
           <button id="analyze-all-slips-btn" class="secondary-button" type="button">Analyze All Slips</button>
+          <button id="full-scan-btn" class="secondary-button" type="button">Full Scan</button>
           <button id="open-config" class="secondary-button" type="button">Open Config</button>
         </div>
         <p id="quick-actions-feedback" class="meta quick-actions-feedback">Run manual daemon actions here without opening the larger sections below.</p>
@@ -432,6 +433,37 @@
                   <label class="field" for="setting-webhook-unit-report">
                     <span>Unit Report Webhook URL</span>
                     <input id="setting-webhook-unit-report" type="text" placeholder="https://discord.com/api/webhooks/..." />
+                  </label>
+                </section>
+
+                <section class="settings-subgroup">
+                  <h4>Promos</h4>
+                  <label class="field" for="setting-webhook-promo-afl">
+                    <span>AFL Promo Webhook URL</span>
+                    <input id="setting-webhook-promo-afl" type="text" placeholder="https://discord.com/api/webhooks/..." />
+                  </label>
+
+                  <label class="field" for="setting-webhook-promo-nrl">
+                    <span>NRL Promo Webhook URL</span>
+                    <input id="setting-webhook-promo-nrl" type="text" placeholder="https://discord.com/api/webhooks/..." />
+                  </label>
+
+                  <label class="field" for="setting-webhook-promo-tennis">
+                    <span>Tennis Promo Webhook URL</span>
+                    <input id="setting-webhook-promo-tennis" type="text" placeholder="https://discord.com/api/webhooks/..." />
+                  </label>
+
+                  <label class="field" for="setting-webhook-promo-soccer">
+                    <span>Soccer Promo Webhook URL</span>
+                    <input id="setting-webhook-promo-soccer" type="text" placeholder="https://discord.com/api/webhooks/..." />
+                  </label>
+                </section>
+
+                <section class="settings-subgroup">
+                  <h4>Analysis</h4>
+                  <label class="field" for="setting-webhook-evidence">
+                    <span>Evidence / Analysis Webhook URL</span>
+                    <input id="setting-webhook-evidence" type="text" placeholder="https://discord.com/api/webhooks/..." />
                   </label>
                 </section>
               </div>

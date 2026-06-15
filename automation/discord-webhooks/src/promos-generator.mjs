@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto';
 import { loadPromoConfig, getActivePromos, validatePromoSlip } from './promos-config.mjs';
 import { getResearchSummary, calculateResearchConfidence } from './promos-research.mjs';
+import { candidateMatchesPromoMarket } from './promos-candidates.mjs';
 import { loadState, saveState } from './state.mjs';
 
 export const CONFIDENCE_THRESHOLD_MIN = 65; // Min 65% confidence
@@ -33,25 +34,16 @@ export async function generatePromoSlip(promoId, candidates = []) {
     throw new Error(`Promo not found: ${promoId}`);
   }
 
-  // Filter candidates by sport
-  const sportCandidates = candidates.filter(c => 
-    c.sport && c.sport.toLowerCase() === promo.sport.toLowerCase()
-  );
+  // Select legs honouring the promo's sport, market filter, and structure
+  // (same-game-multi => one event; multi => one leg per distinct event).
+  const selectedLegs = selectPromoLegs(promo, candidates);
 
-  if (sportCandidates.length < promo.legCount) {
+  if (selectedLegs.length < promo.legCount) {
     throw new Error(
       `Insufficient candidates for ${promo.id}: ` +
-      `need ${promo.legCount}, got ${sportCandidates.length}`
+      `need ${promo.legCount}, got ${selectedLegs.length}`
     );
   }
-
-  // Select legs targeting the odds range
-  const selectedLegs = selectLegsForOddsRange(
-    sportCandidates,
-    promo.legCount,
-    promo.minOdds,
-    promo.maxOdds
-  );
 
   // Apply research validation
   const researchSummary = await getResearchSummary(promo.sport, selectedLegs);
@@ -171,6 +163,107 @@ export function selectLegsForOddsRange(candidates, count, minOdds, maxOdds) {
 }
 
 /**
+ * Select legs for a promo, honouring its sport, market filter and structure.
+ *  - same-game-multi : all legs from a single event (best event that fits the band).
+ *  - multi (h2h etc.): one leg per distinct event, combined into the odds band.
+ * @param {Object} promo - promo config
+ * @param {Array} candidates - promo legs (from buildPromoCandidatesFromSnapshot)
+ * @returns {Array} selected legs (empty if none qualify)
+ */
+export function selectPromoLegs(promo, candidates) {
+  const pool = (candidates || []).filter((candidate) =>
+    candidate?.sport
+    && candidate.sport.toLowerCase() === String(promo.sport).toLowerCase()
+    && candidateMatchesPromoMarket(promo.market, candidate)
+  );
+
+  if (pool.length < promo.legCount) {
+    return [];
+  }
+
+  if (String(promo.type || '').toLowerCase() === 'same-game-multi') {
+    // Every leg must come from the same match; choose the strongest event
+    // that can fill the slip inside the odds band.
+    const byEvent = groupCandidatesBy(pool, (candidate) => candidate.matchId || candidate.eventName);
+    let best = [];
+
+    for (const eventLegs of byEvent.values()) {
+      const distinct = dedupeBySubject(eventLegs);
+      if (distinct.length < promo.legCount) {
+        continue;
+      }
+
+      const selected = selectLegsForOddsRange(distinct, promo.legCount, promo.minOdds, promo.maxOdds);
+      if (selected.length === promo.legCount && averageConfidence(selected) > averageConfidence(best)) {
+        best = selected;
+      }
+    }
+
+    return best;
+  }
+
+  // Multi across different events: at most one (favourite) leg per event.
+  const onePerEvent = pickBestPerEvent(pool);
+  return selectLegsForOddsRange(onePerEvent, promo.legCount, promo.minOdds, promo.maxOdds);
+}
+
+/**
+ * Group an array into a Map keyed by keyFn.
+ */
+function groupCandidatesBy(items, keyFn) {
+  const map = new Map();
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(item);
+  }
+  return map;
+}
+
+/**
+ * Keep one leg per subject (conflict group), preferring higher confidence.
+ * Prevents picking both sides of the same market (e.g. Over and Under).
+ */
+function dedupeBySubject(legs) {
+  const bySubject = new Map();
+  for (const leg of legs) {
+    const key = leg.conflictGroup || leg.id;
+    const existing = bySubject.get(key);
+    if (!existing || (leg.confidence || 0) > (existing.confidence || 0)) {
+      bySubject.set(key, leg);
+    }
+  }
+  return [...bySubject.values()];
+}
+
+/**
+ * One highest-confidence leg per event (favourite for h2h markets).
+ */
+function pickBestPerEvent(legs) {
+  const byEvent = groupCandidatesBy(legs, (leg) => leg.matchId || leg.eventName);
+  const picks = [];
+  for (const eventLegs of byEvent.values()) {
+    const best = [...eventLegs].sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+    if (best) {
+      picks.push(best);
+    }
+  }
+  return picks;
+}
+
+/**
+ * Average confidence across legs (0 for an empty set).
+ */
+function averageConfidence(legs) {
+  if (!legs.length) {
+    return 0;
+  }
+  return legs.reduce((sum, leg) => sum + (leg.confidence || 0), 0) / legs.length;
+}
+
+/**
  * Build slip ID from promo
  * Format: promo:promoId:UUID
  * @param {string} promoId
@@ -198,25 +291,40 @@ export function buildPromoSlip(slipId, promo, legs, confidence, combinedOdds) {
     site: promo.site || 'TAB',
     market: promo.market || 'default',
     
-    // Slip details
+    // Slip details — legs retain the identity settlement needs (event teams,
+    // player, line, side) so they can be graded against finalized results later.
     legCount: legs.length,
     legs: legs.map(leg => ({
       id: leg.id,
-      player: leg.player || leg.team,
+      sport: leg.sport || promo.sport,
+      matchId: leg.matchId || '',
+      eventName: leg.eventName || '',
+      homeTeam: leg.homeTeam || '',
+      awayTeam: leg.awayTeam || '',
+      commenceTime: leg.commenceTime || '',
+      label: leg.label || leg.player || leg.team || '',
+      player: leg.player || '',
+      team: leg.team || '',
+      selection: leg.selection || leg.outcomeName || '',
+      side: leg.side || '',
       market: leg.market,
+      point: leg.point ?? null,
       odds: leg.odds,
       confidence: leg.confidence || 0
     })),
-    
+
     // Combined outcome
     combinedOdds: combinedOdds,
     overallConfidence: confidence,
     confidenceTier: getConfidenceTier(confidence),
-    
+
+    // Settlement rule travels with the slip so settlement applies the right grading.
+    settlementRule: promo.settlementRule || { type: 'standard' },
+
     // Validation
     meetsMinimumOdds: combinedOdds >= promo.minOdds,
     withinTargetOdds: combinedOdds >= promo.minOdds && combinedOdds <= promo.maxOdds,
-    
+
     // Metadata
     generated: new Date().toISOString(),
     status: 'draft'
@@ -283,6 +391,7 @@ export async function listPromoSlips() {
 
 export const __testables = {
   selectLegsForOddsRange,
+  selectPromoLegs,
   buildSlipId,
   buildPromoSlip,
   getConfidenceTier

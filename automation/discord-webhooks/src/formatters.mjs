@@ -51,10 +51,6 @@ function formatPercent(value) {
   return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : 'TBD';
 }
 
-function formatSupportScore(value) {
-  return Number.isFinite(Number(value)) ? `${Number(value).toFixed(2)}/10` : 'TBD';
-}
-
 function getPickDisplayTotalOdds(pick) {
   const candidateValues = [
     pick?.publicationValidation?.totalOdds,
@@ -86,16 +82,6 @@ function truncate(value, maxLength) {
   }
 
   return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
-}
-
-function formatLabel(value) {
-  const text = String(value || '').trim();
-
-  if (!text) {
-    return '';
-  }
-
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function getSportLabel(item) {
@@ -483,52 +469,6 @@ export function formatCancellationPickMessages(pick, reason, dateKey) {
       return buildField(cancelledPick.event || 'Cancelled pick', lines);
     }
   });
-}
-
-export function formatResultMessages(results, dateKey) {
-  return buildGroupedEmbedMessages(results, {
-    dateKey,
-    titleSuffix: 'Settled Picks',
-    color: EMBED_COLORS.results,
-    description: 'Settled outcomes grouped by sport.',
-    footerText: 'Times shown as relative Discord timestamps.',
-    buildField: (pick) => {
-      const result = String(pick.status || '').toUpperCase() || 'RESULT';
-      const lines = [
-        `Slip: ${pick.summary || 'TBD'}`,
-        `Stake: ${formatStake(pick.stakeUnits)}`
-      ];
-
-      if (pick.returnUnits !== undefined) {
-        lines.push(`Return: ${formatStake(pick.returnUnits)}`);
-      }
-
-      if (pick.netUnits !== undefined) {
-        const net = Number(pick.netUnits);
-        lines.push(`Net: ${Number.isFinite(net) ? `${net >= 0 ? '+' : ''}${net.toFixed(2)}u` : 'TBD'}`);
-      }
-
-      if (pick.settledAt) {
-        lines.push(`Settled: ${formatStartTime(pick.settledAt)}`);
-      }
-
-      appendWeatherLines(lines, pick);
-
-      if (pick.resultNotes) {
-        lines.push(`Notes: ${pick.resultNotes}`);
-      }
-
-      return buildField(`${result} | ${pick.event || 'Pick'}`, lines);
-    }
-  });
-}
-
-function formatLegOutcomeLines(label, items, fallback) {
-  if (!Array.isArray(items) || !items.length) {
-    return `${label}: ${fallback}`;
-  }
-
-  return `${label}:\n${items.map((item) => `- ${item}`).join('\n')}`;
 }
 
 function getSettlementOrderTime(value) {

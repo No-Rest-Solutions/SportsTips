@@ -113,7 +113,7 @@ export async function runSlatesJob(context, overrides = {}) {
     const messages = formatSlateMessages(sport, selectedSlate.dateKey, events);
 
     for (const message of messages) {
-      const automatedMessage = buildAutomatedMessage(config, 'slates', message);
+      const automatedMessage = buildAutomatedMessage(config, 'slates', message, { sport: sport.key });
 
       await sendWebhookMessage(
         config.discord.webhooks.slates,

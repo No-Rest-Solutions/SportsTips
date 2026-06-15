@@ -58,6 +58,9 @@ export async function settlePromoSlip(slipId, slipSnapshot, legResults = []) {
       settledLegs.push({
         ...leg,
         outcome: result.outcome,
+        // Carry the miss margin so margin-forgiveness rules can regrade a
+        // near-miss loss (e.g. "missed disposals by 1 still counts as a win").
+        missBy: result.missBy,
         settledAt: new Date().toISOString(),
         source: result.source
       });
@@ -72,32 +75,41 @@ export async function settlePromoSlip(slipId, slipSnapshot, legResults = []) {
     }
   }
 
-  // Calculate slip outcome
-  const outcome = calculateSlipOutcome(settledLegs);
-  const status = unresolvedCount > 0 ? SETTLEMENT_STATUS.PARTIAL : 
-                 outcome === 'win' ? SETTLEMENT_STATUS.SETTLED :
-                 outcome === 'loss' ? SETTLEMENT_STATUS.SETTLED :
-                 SETTLEMENT_STATUS.UNRESOLVED;
+  // Apply the promo's settlement rule (standard / leg-insurance / margin-forgiveness).
+  const ruleResult = applyPromoSettlementRule(slipSnapshot.settlementRule, settledLegs);
+  const outcome = ruleResult.outcome;
+  const finalLegs = ruleResult.legs;
+  const status = unresolvedCount > 0
+    ? SETTLEMENT_STATUS.PARTIAL
+    : outcome === 'refund'
+      ? SETTLEMENT_STATUS.REFUNDED
+      : (outcome === 'win' || outcome === 'loss' || outcome === 'void')
+        ? SETTLEMENT_STATUS.SETTLED
+        : SETTLEMENT_STATUS.UNRESOLVED;
+  // Win pays the combined odds; an insured refund returns the stake (1.0x); a loss returns nothing.
+  const returnOdds = outcome === 'win' ? slipSnapshot.combinedOdds : outcome === 'refund' ? 1 : 0;
 
   const settlement = {
     id: slipId,
     promoId: slipSnapshot.promoId,
     sport: slipSnapshot.sport,
-    
+
     // Legs
     legCount: slipSnapshot.legs.length,
-    legs: settledLegs,
-    
+    legs: finalLegs,
+
     // Outcome
     outcome: outcome,
     status: status,
     unresolvedLegs: unresolvedCount,
-    
+    settlementRule: slipSnapshot.settlementRule || { type: 'standard' },
+    refunded: Boolean(ruleResult.refund),
+
     // Odds & units
     combinedOdds: slipSnapshot.combinedOdds,
     stakeUnits: slipSnapshot.stakeUnits || 1,
-    returnOdds: outcome === 'win' ? slipSnapshot.combinedOdds : 0,
-    
+    returnOdds,
+
     // Tracking
     settledAt: new Date().toISOString(),
     createdAt: slipSnapshot.generated
@@ -120,12 +132,16 @@ export function matchLegToResult(leg, result) {
     return false;
   }
 
-  // Match by player and market
-  const playerMatch = (leg.player || '').toLowerCase() === (result.player || '').toLowerCase();
+  // Match by market + odds, and by the leg's subject: team for match-winner
+  // (h2h) legs, player for everything else.
   const marketMatch = (leg.market || '').toLowerCase() === (result.market || '').toLowerCase();
   const oddsMatch = Math.abs(leg.odds - result.odds) < 0.01; // Allow small rounding differences
+  const isH2h = (leg.market || '').toLowerCase() === 'h2h';
+  const subjectMatch = isH2h
+    ? (leg.team || '') !== '' && (leg.team || '').toLowerCase() === (result.team || '').toLowerCase()
+    : (leg.player || '').toLowerCase() === (result.player || '').toLowerCase();
 
-  return playerMatch && marketMatch && oddsMatch;
+  return subjectMatch && marketMatch && oddsMatch;
 }
 
 /**
@@ -162,6 +178,63 @@ export function calculateSlipOutcome(settledLegs) {
 
   // Default to pending
   return LEG_OUTCOME.PENDING;
+}
+
+/**
+ * Apply a promo's settlement rule to settled legs.
+ *  - 'standard'           : all legs win => win; any loss => loss (classic SGM grading).
+ *  - 'leg-insurance'      : up to `insuredLegs` losing legs => refund (stake returned); more => loss.
+ *  - 'margin-forgiveness' : a losing leg that missed its line by <= `marginTolerance` is regraded a win.
+ * @param {Object} settlementRule - { type, insuredLegs?, marginTolerance? }
+ * @param {Array} settledLegs - legs with .outcome (and .missBy for margin-forgiveness)
+ * @returns {{ outcome: string, refund: boolean, legs: Array }} outcome is win|loss|refund|void|pending
+ */
+export function applyPromoSettlementRule(settlementRule, settledLegs) {
+  const rule = settlementRule && typeof settlementRule === 'object' ? settlementRule : { type: 'standard' };
+  const type = String(rule.type || 'standard').toLowerCase();
+
+  // Margin forgiveness regrades near-miss losses to wins BEFORE counting outcomes.
+  const legs = type === 'margin-forgiveness'
+    ? settledLegs.map((leg) => {
+      const tolerance = Number(rule.marginTolerance ?? 1);
+      const missBy = Number(leg?.missBy);
+      if (leg?.outcome === LEG_OUTCOME.LOSS && Number.isFinite(missBy) && missBy > 0 && missBy <= tolerance) {
+        return { ...leg, outcome: LEG_OUTCOME.WIN, forgiven: true, forgivenMissBy: missBy };
+      }
+      return leg;
+    })
+    : settledLegs;
+
+  const outcomes = legs.map((leg) => leg?.outcome);
+
+  if (outcomes.includes(LEG_OUTCOME.UNRESOLVED) || outcomes.includes(LEG_OUTCOME.PENDING)) {
+    return { outcome: LEG_OUTCOME.PENDING, refund: false, legs };
+  }
+
+  const lossCount = outcomes.filter((outcome) => outcome === LEG_OUTCOME.LOSS).length;
+
+  if (type === 'leg-insurance') {
+    const insuredLegs = Math.max(0, Number(rule.insuredLegs ?? 1));
+    if (lossCount === 0) {
+      return { outcome: LEG_OUTCOME.WIN, refund: false, legs };
+    }
+    if (lossCount <= insuredLegs) {
+      return { outcome: 'refund', refund: true, legs };
+    }
+    return { outcome: LEG_OUTCOME.LOSS, refund: false, legs };
+  }
+
+  // standard / margin-forgiveness (post-regrade) / any other rule => classic grading.
+  if (lossCount > 0) {
+    return { outcome: LEG_OUTCOME.LOSS, refund: false, legs };
+  }
+  if (outcomes.length && outcomes.every((outcome) => outcome === LEG_OUTCOME.WIN)) {
+    return { outcome: LEG_OUTCOME.WIN, refund: false, legs };
+  }
+  if (outcomes.includes(LEG_OUTCOME.VOID)) {
+    return { outcome: LEG_OUTCOME.VOID, refund: false, legs };
+  }
+  return { outcome: LEG_OUTCOME.PENDING, refund: false, legs };
 }
 
 /**
@@ -265,6 +338,7 @@ export async function logSettlementToTracker(settlement) {
 export const __testables = {
   matchLegToResult,
   calculateSlipOutcome,
+  applyPromoSettlementRule,
   SETTLEMENT_STATUS,
   LEG_OUTCOME
 };

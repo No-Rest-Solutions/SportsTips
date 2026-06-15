@@ -72,18 +72,6 @@ function formatNumberValue(value) {
     : 'Unknown';
 }
 
-function formatGainAud(value) {
-  return Number.isFinite(Number(value))
-    ? `+$${formatNumberValue(Number(value))} AUD`
-    : 'Unknown';
-}
-
-function formatDurationDays(value) {
-  return Number.isFinite(Number(value))
-    ? `${formatNumberValue(Number(value))} day${Number(value) === 1 ? '' : 's'}`
-    : 'Unknown';
-}
-
 function decodeHtmlEntities(value) {
   return String(value || '')
     .replace(/&nbsp;/gi, ' ')
@@ -1964,26 +1952,6 @@ function buildReferralDetailEmbed(offer, options = {}) {
 function buildSourcesField(offer) {
   const sources = dedupeList([offer?.officialOfferUrl, offer?.officialTermsUrl]);
   return sources.join('\n') || 'No source captured';
-}
-
-function buildCapitalPlanField(plan) {
-  if (!plan?.steps?.length) {
-    return null;
-  }
-
-  const lines = [
-    'Assumes one legitimate referral cycle at a time and counts only currently published combined value.'
-  ].concat(plan.steps.map((step) => `${step.order}. ${step.brand}: need ${formatAudAmount(step.activationCapitalAud)} | ${formatGainAud(step.combinedAdvertisedValueAud)} combined | payout ~${formatDurationDays(step.estimatedPayoutDays)} | bank to ${formatAudAmount(step.projectedEndingCapitalAud)}.`));
-
-  if (Array.isArray(plan.deferred) && plan.deferred.length) {
-    lines.push(`Deferred: ${plan.deferred.slice(0, 2).map((item) => `${item.brand} (${item.reason})`).join(' | ')}`);
-  }
-
-  return {
-    name: `Start with ${formatAudAmount(plan.startingCapitalAud)} | Est. finish ${formatAudAmount(plan.projectedEndingCapitalAud)}`,
-    value: truncateText(lines.join('\n'), 1000),
-    inline: false
-  };
 }
 
 function buildReferralEventMessage(event) {

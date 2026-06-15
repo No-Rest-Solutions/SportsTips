@@ -110,6 +110,20 @@ function resolveRoleMentionText(roleMentions, channel, context = {}) {
   }
 
   if (channel === 'slates') {
+    // Per-sport daily-slate pings reuse that sport's PICKS role (e.g. the NBA
+    // slate tags the NBA picks role), falling back to the single slates role.
+    const sportRoleKey = context.sport ? resolvePickRoleKey('picks', context) : null;
+    const picks = roleMentions?.picks;
+
+    if (sportRoleKey && picks && typeof picks === 'object') {
+      const specificMention = sportRoleKey === 'shared' ? '' : normalizeRoleMentionText(picks[sportRoleKey]);
+      const sharedMention = normalizeRoleMentionText(picks.shared);
+
+      if (specificMention || sharedMention) {
+        return specificMention || sharedMention;
+      }
+    }
+
     const slateMention = normalizeRoleMentionText(roleMentions?.slates);
 
     if (slateMention) {

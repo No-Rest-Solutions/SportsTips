@@ -4,13 +4,25 @@ import { analyzeEventWithOpenAi, analyzeEventWithRules, buildAnalysisCandidatePo
 import { buildDailyTrackerSummary } from '../bot-tracker.mjs';
 import { mergeGeneratedPicks, mergeQuoteEntries } from '../pick-generator.mjs';
 import { loadRawPicksFeed, saveRawPicksFeed } from '../picks-feed.mjs';
-import { fetchAflClubTeamRoster, fetchAflOfficialPlayer, fetchAflOfficialTeams, fetchAflStatsProPlayerProfile } from '../providers/afl-official.mjs';
-import { fetchEspnSlate } from '../providers/espn.mjs';
+import { fetchAflClubTeamRoster, fetchAflOfficialPlayer, fetchAflOfficialSlate, fetchAflOfficialSummary, fetchAflOfficialTeams, fetchAflStatsProPlayerProfile } from '../providers/afl-official.mjs';
+import { fetchEspnSlate, fetchEspnSummary } from '../providers/espn.mjs';
 import { fetchEspnTeamInjuries } from '../providers/espn-injuries.mjs';
-import { fetchRotowireMlbDailyLineups, fetchRotowireMlbNews, findMatchingRotowireMlbGame, getRotowireMlbLineupsPageKey } from '../providers/mlb-rotowire.mjs';
-import { extractMlbGameResearch, fetchMlbGameFeed, fetchMlbSchedule } from '../providers/mlb-statsapi.mjs';
 import { fetchNrlOfficialSlate, fetchNrlOfficialSummary } from '../providers/nrl-official.mjs';
 import { buildOpenMeteoEventWeatherSnapshot, fetchOpenMeteoForecast, geocodeOpenMeteoLocation } from '../providers/open-meteo.mjs';
+import {
+  getStatKeysForMarket,
+  buildPlayerStatSeries,
+  computePropEvidence,
+  PROP_EVIDENCE_STATUS
+} from '../research/player-form.mjs';
+import {
+  computeTeamFormSummary,
+  computeH2hRecord,
+  computeH2hEvidence,
+  computeTotalsEvidence,
+  computeSpreadEvidence
+} from '../research/matchup.mjs';
+import { buildCrossGameMultisForSport } from '../cross-game-multis.mjs';
 import { getDateKey } from '../scheduler.mjs';
 import { teamNamesMatch, textMentionsTeam } from '../team-name-matching.mjs';
 import { buildSnapshotEvents, ensureFreshScrapedSnapshot, fetchSportsbetEventTargetBetQuotes, getSnapshotEventQuotes } from '../web-market-intake.mjs';
@@ -104,12 +116,6 @@ function stripTrailingParentheticalLabel(value) {
 
 function normalizeMlbTeamName(value) {
   return normalizeText(stripTrailingParentheticalLabel(value));
-}
-
-function normalizeEventTeamNameForProviderMatch(sport, value) {
-  return normalizeText(normalizeText(sport?.key || sport?.marketKey) === 'mlb'
-    ? stripTrailingParentheticalLabel(value)
-    : value);
 }
 
 function buildMlbResearchEventContext(eventContext) {
@@ -595,7 +601,8 @@ function buildEventContext(config, sport, event) {
     weather: event.weather || null,
     timezone: config.timezone,
     bookmakerFallbackProviders: Array.isArray(config.bookmakerFallback?.providers) ? config.bookmakerFallback.providers : [],
-    generatorConfig: config.analysis.generator
+    generatorConfig: config.analysis.generator,
+    deepAnalysis: config.analysis.deepAnalysis || null
   };
 }
 
@@ -1925,7 +1932,7 @@ function buildMlbSupportingNewsReason(candidate, entry) {
   return `Recent RotoWire MLB context for ${candidate.description || candidate.label}: ${headline}${timestamp}.`;
 }
 
-function buildCandidateResearch(candidate, sport, eventContext, injuryResearch, weatherResearch, mlbResearch, formResearch, externalSignalResearch) {
+function buildCandidateResearch(candidate, sport, eventContext, injuryResearch, weatherResearch, formResearch, externalSignalResearch) {
   const reasons = [];
   let blocked = false;
   let hasVerifiedResearch = false;
@@ -1985,106 +1992,6 @@ function buildCandidateResearch(candidate, sport, eventContext, injuryResearch, 
     } else if (Array.isArray(candidate?.aflConfirmationReasons) && candidate.aflConfirmationReasons.length) {
       hasVerifiedResearch = true;
       reasons.push(...candidate.aflConfirmationReasons);
-    }
-  }
-
-  if (isMlbResearchCandidate(sport, candidate)) {
-    if (mlbResearch.status !== 'ok') {
-      blocked = true;
-      hasResearchGap = true;
-      reasons.push(`Official MLB starter/lineup research is unavailable: ${(mlbResearch.reasons || []).join(', ') || mlbResearch.status}.`);
-    } else {
-      hasVerifiedResearch = true;
-      const playerName = normalizePlayerName(candidate?.description);
-      const matchingPlayers = Array.isArray(mlbResearch.playersByName.get(playerName))
-        ? mlbResearch.playersByName.get(playerName)
-        : [];
-      const normalizedMarket = normalizeMarketKey(candidate?.market);
-
-      if (!matchingPlayers.length) {
-        blocked = true;
-        reasons.push(`${candidate.description || candidate.label} is not on the official MLB game roster for ${eventContext?.eventName || 'this event'}.`);
-      } else if (matchingPlayers.length > 1) {
-        blocked = true;
-        reasons.push(`Official MLB roster lookup is ambiguous for ${candidate.description || candidate.label}, so the prop cannot be safely validated.`);
-      } else {
-        const player = matchingPlayers[0];
-        const teamResearch = mlbResearch.teamResearchBySide.get(player.teamSide);
-        const projectedTeamResearch = mlbResearch.projectedTeamResearchBySide.get(player.teamSide);
-        mlbTeamSide = player.teamSide || '';
-        mlbTeamName = player.teamName || teamResearch?.teamName || projectedTeamResearch?.teamName || '';
-
-        if (normalizedMarket === 'pitcher_strikeouts') {
-          if (!mlbResearch.probablePitcherNames.size) {
-            blocked = true;
-            hasResearchGap = true;
-            reasons.push('Official MLB probable starters are not posted yet for this event.');
-          } else if (!mlbResearch.probablePitcherNames.has(player.normalizedPlayerName)) {
-            blocked = true;
-            reasons.push(buildMlbStarterReason(candidate, eventContext));
-          }
-        }
-
-        if (MLB_BATTER_RESEARCH_MARKETS.has(normalizedMarket)) {
-          if (teamResearch?.hasConfirmedBattingOrder) {
-            if (!player.inBattingOrder) {
-              blocked = true;
-              reasons.push(`${candidate.description || candidate.label} is not in the official batting order for ${player.teamName || 'the relevant side'}.`);
-            } else if (player.battingOrderIndex && player.battingOrderIndex > MLB_SAFE_BATTER_ORDER_MAX) {
-              blocked = true;
-              reasons.push(buildMlbBottomOrderReason(candidate, player.battingOrderIndex, player.teamName, 'official'));
-            } else {
-              mlbBattingOrderIndex = player.battingOrderIndex || null;
-              mlbLineupSource = 'official';
-            }
-          } else if (projectedTeamResearch?.hasProjectedBattingOrder) {
-            const projectedPlayer = projectedTeamResearch.playersByName.get(player.normalizedPlayerName);
-
-            if (!projectedPlayer) {
-              blocked = true;
-              reasons.push(buildProjectedMlbExclusionReason(candidate, projectedTeamResearch));
-            } else {
-              reasons.push(buildProjectedMlbSupportReason(candidate, projectedPlayer, projectedTeamResearch));
-              mlbTeamName = projectedTeamResearch.teamName || mlbTeamName;
-              mlbBattingOrderIndex = projectedPlayer.battingOrderIndex || null;
-              mlbLineupSource = projectedTeamResearch.lineupStatus === 'confirmed' ? 'confirmed' : 'projected';
-
-              if (projectedPlayer.battingOrderIndex && projectedPlayer.battingOrderIndex > MLB_SAFE_BATTER_ORDER_MAX) {
-                blocked = true;
-                reasons.push(buildMlbBottomOrderReason(
-                  candidate,
-                  projectedPlayer.battingOrderIndex,
-                  projectedTeamResearch.teamName,
-                  projectedTeamResearch.lineupStatus === 'confirmed' ? 'confirmed' : 'projected'
-                ));
-              }
-            }
-          } else {
-            const hoursUntilStart = getHoursUntilStart(eventContext?.startTime);
-            const missingLineupReason = buildMissingMlbLineupReason(player.teamName);
-            const missingProjectedLineupReason = mlbResearch.projectedLineupStatus === 'lookup_error'
-              ? `RotoWire projected MLB lineups are unavailable: ${(mlbResearch.projectedLineupReasons || []).join(', ') || mlbResearch.projectedLineupStatus}.`
-              : buildMissingProjectedMlbLineupReason(player.teamName);
-            hasResearchGap = true;
-
-            if (hoursUntilStart !== null && hoursUntilStart <= MLB_LINEUP_LOCK_HOURS) {
-              blocked = true;
-              reasons.push(`${missingLineupReason} ${missingProjectedLineupReason} MLB batter props stay closed inside ${MLB_LINEUP_LOCK_HOURS}h of first pitch.`);
-            } else {
-              reasons.push(missingLineupReason);
-              reasons.push(missingProjectedLineupReason);
-            }
-          }
-        }
-
-        const supportingNews = Array.isArray(mlbResearch.playerNewsByName.get(player.normalizedPlayerName))
-          ? mlbResearch.playerNewsByName.get(player.normalizedPlayerName).filter((entry) => shouldIncludeMlbSupportingNews(entry)).slice(0, 1)
-          : [];
-
-        for (const newsEntry of supportingNews) {
-          reasons.push(buildMlbSupportingNewsReason(candidate, newsEntry));
-        }
-      }
     }
   }
 
@@ -2170,6 +2077,350 @@ function buildCandidateResearch(candidate, sport, eventContext, injuryResearch, 
   };
 }
 
+// ---------------------------------------------------------------------------
+// Deep per-leg analysis (rules-layer research evidence). Grades every candidate
+// against real recent form/matchup data so only genuinely-supported legs survive
+// when config.analysis.deepAnalysis.requireLegEvidence is on. Fails safe: if the
+// data can't be fetched, supported evidence simply isn't produced -> NO BET.
+// See docs/DEEP-ANALYSIS.md.
+// ---------------------------------------------------------------------------
+
+function buildDeepFormEntry(scoreboardEvent, matchedSide) {
+  const teamScore = toNumber(matchedSide === 'home' ? scoreboardEvent?.homeScore : scoreboardEvent?.awayScore);
+  const opponentScore = toNumber(matchedSide === 'home' ? scoreboardEvent?.awayScore : scoreboardEvent?.homeScore);
+
+  if (teamScore === null || opponentScore === null) {
+    return null;
+  }
+
+  return {
+    eventId: String(scoreboardEvent?.id || ''),
+    opponentName: matchedSide === 'home' ? scoreboardEvent?.awayTeam : scoreboardEvent?.homeTeam,
+    scored: teamScore,
+    conceded: opponentScore,
+    won: teamScore > opponentScore
+  };
+}
+
+// Player box-score source per sport. AFL/NRL player stats live on their official
+// providers (ESPN doesn't carry them) — settlement uses the same sources.
+export function getBoxscoreProvider(sportKey, overrides = {}) {
+  switch (String(sportKey || '').toLowerCase()) {
+    case 'afl':
+      return {
+        label: 'afl-official',
+        summaryByEvent: true,
+        fetchSlate: overrides.fetchAflOfficialSlate || fetchAflOfficialSlate,
+        fetchSummary: overrides.fetchAflOfficialSummary || fetchAflOfficialSummary
+      };
+    case 'nrl':
+      return {
+        label: 'nrl-official',
+        summaryByEvent: true,
+        fetchSlate: overrides.fetchNrlOfficialSlate || fetchNrlOfficialSlate,
+        fetchSummary: overrides.fetchNrlOfficialSummary || fetchNrlOfficialSummary
+      };
+    default:
+      return {
+        label: 'espn',
+        summaryByEvent: false,
+        fetchSlate: overrides.fetchEspnSlate || fetchEspnSlate,
+        fetchSummary: overrides.fetchEspnSummary || fetchEspnSummary
+      };
+  }
+}
+
+// ESPN path: fetch box scores for the recent games already found in the form scan.
+async function loadRecentTeamBoxscores(sport, entries, fetchSummary, summaryCache, recentGames) {
+  const games = [];
+
+  for (const entry of entries.slice(0, recentGames)) {
+    if (!entry.eventId) {
+      continue;
+    }
+
+    const cacheKey = `espn:${sport.key}:${entry.eventId}`;
+
+    if (!summaryCache.has(cacheKey)) {
+      summaryCache.set(cacheKey, fetchSummary(sport, entry.eventId)
+        .then((summary) => (Array.isArray(summary?.playerStats) ? summary.playerStats : []))
+        .catch(() => []));
+    }
+
+    try {
+      const playerStats = await summaryCache.get(cacheKey);
+      if (Array.isArray(playerStats) && playerStats.length) {
+        games.push(playerStats);
+      }
+    } catch {
+      // Skip a game whose box score can't be read.
+    }
+  }
+
+  return games; // most-recent first
+}
+
+// Official-provider path (AFL/NRL): scan the provider's own slate for the team's
+// recent finalised games, then pull each game's box score from its summary.
+async function loadTeamBoxscoresViaProvider(sport, eventContext, teamName, teamId, provider, slateCache, summaryCache, recentGames) {
+  const events = [];
+  const seen = new Set();
+  const eventStartMs = Date.parse(eventContext.startTime || '');
+
+  for (const dateKey of buildRecentFormDateKeys(sport, eventContext)) {
+    const slateKey = `${provider.label}:${sport.key}:${dateKey}`;
+
+    if (!slateCache.has(slateKey)) {
+      slateCache.set(slateKey, provider.fetchSlate(sport, dateKey, eventContext.timezone)
+        .then((slate) => (Array.isArray(slate?.events) ? slate.events : []))
+        .catch(() => []));
+    }
+
+    let slateEvents;
+    try {
+      slateEvents = await slateCache.get(slateKey);
+    } catch {
+      continue;
+    }
+
+    for (const scoreboardEvent of slateEvents) {
+      if (!isFinalScoreboardEvent(scoreboardEvent) || seen.has(scoreboardEvent.id)) {
+        continue;
+      }
+      const startMs = Date.parse(scoreboardEvent?.startTime || '');
+      if (Number.isFinite(startMs) && Number.isFinite(eventStartMs) && startMs >= eventStartMs) {
+        continue;
+      }
+      if (!matchEventTeamSide(scoreboardEvent, teamName, teamId)) {
+        continue;
+      }
+      seen.add(scoreboardEvent.id);
+      events.push(scoreboardEvent);
+    }
+
+    if (events.length >= recentGames) {
+      break;
+    }
+  }
+
+  const games = [];
+  for (const scoreboardEvent of events.slice(0, recentGames)) {
+    const summaryKey = `${provider.label}:${sport.key}:${scoreboardEvent.id}`;
+
+    if (!summaryCache.has(summaryKey)) {
+      summaryCache.set(summaryKey, provider.fetchSummary(sport, scoreboardEvent)
+        .then((summary) => (Array.isArray(summary?.playerStats) ? summary.playerStats : []))
+        .catch(() => []));
+    }
+
+    try {
+      const playerStats = await summaryCache.get(summaryKey);
+      if (Array.isArray(playerStats) && playerStats.length) {
+        games.push(playerStats);
+      }
+    } catch {
+      // Skip a game whose box score can't be read.
+    }
+  }
+
+  return games; // most-recent first
+}
+
+export async function loadEventDeepEvidenceInputs(sport, eventContext, researchCaches, overrides = {}, options = {}) {
+  const fetchScoreboard = overrides.fetchEspnSlate || fetchEspnSlate;
+  const formCache = researchCaches?.form instanceof Map ? researchCaches.form : new Map();
+  const summaryCache = researchCaches?.boxscore instanceof Map ? researchCaches.boxscore : new Map();
+  const recentGames = Number(eventContext?.deepAnalysis?.recentGames || 5);
+  const homeEntries = [];
+  const awayEntries = [];
+  const seenHome = new Set();
+  const seenAway = new Set();
+
+  if (sport?.path && eventContext?.homeTeam && eventContext?.awayTeam && eventContext?.startTime) {
+    for (const dateKey of buildRecentFormDateKeys(sport, eventContext)) {
+      const cacheKey = `${sport.key}:${dateKey}`;
+
+      if (!formCache.has(cacheKey)) {
+        formCache.set(cacheKey, fetchScoreboard(sport, dateKey));
+      }
+
+      let scoreboard;
+
+      try {
+        scoreboard = await formCache.get(cacheKey);
+      } catch {
+        continue;
+      }
+
+      for (const scoreboardEvent of Array.isArray(scoreboard?.events) ? scoreboard.events : []) {
+        if (!isFinalScoreboardEvent(scoreboardEvent)) {
+          continue;
+        }
+
+        const scoreboardStartMs = Date.parse(scoreboardEvent?.startTime || '');
+        const eventStartMs = Date.parse(eventContext.startTime || '');
+
+        if (Number.isFinite(scoreboardStartMs) && Number.isFinite(eventStartMs) && scoreboardStartMs >= eventStartMs) {
+          continue;
+        }
+
+        const homeSide = matchEventTeamSide(scoreboardEvent, eventContext.homeTeam, eventContext.homeTeamId);
+        if (homeSide && !seenHome.has(scoreboardEvent.id)) {
+          const entry = buildDeepFormEntry(scoreboardEvent, homeSide);
+          if (entry) {
+            homeEntries.push(entry);
+            seenHome.add(scoreboardEvent.id);
+          }
+        }
+
+        const awaySide = matchEventTeamSide(scoreboardEvent, eventContext.awayTeam, eventContext.awayTeamId);
+        if (awaySide && !seenAway.has(scoreboardEvent.id)) {
+          const entry = buildDeepFormEntry(scoreboardEvent, awaySide);
+          if (entry) {
+            awayEntries.push(entry);
+            seenAway.add(scoreboardEvent.id);
+          }
+        }
+      }
+
+      if (homeEntries.length >= recentGames && awayEntries.length >= recentGames) {
+        break;
+      }
+    }
+  }
+
+  const toFormGame = (entry) => ({ scored: entry.scored, conceded: entry.conceded });
+  const homeForm = computeTeamFormSummary(homeEntries.slice(0, recentGames).map(toFormGame));
+  const awayForm = computeTeamFormSummary(awayEntries.slice(0, recentGames).map(toFormGame));
+  const h2hForHome = computeH2hRecord(homeEntries
+    .filter((entry) => teamNamesMatch(entry.opponentName, eventContext.awayTeam))
+    .map((entry) => ({ pickedWon: entry.won })));
+  const h2hForAway = computeH2hRecord(awayEntries
+    .filter((entry) => teamNamesMatch(entry.opponentName, eventContext.homeTeam))
+    .map((entry) => ({ pickedWon: entry.won })));
+
+  let boxscoresBySide = new Map();
+  if (options.fetchBoxscores !== false) {
+    const sportKey = String(sport?.key || eventContext?.sportKey || '').toLowerCase();
+    const provider = getBoxscoreProvider(sportKey, overrides);
+
+    if (provider.summaryByEvent) {
+      // AFL/NRL: scan the official slate for each team's recent games.
+      const slateCache = researchCaches?.officialSlate instanceof Map ? researchCaches.officialSlate : new Map();
+      boxscoresBySide = new Map([
+        ['home', await loadTeamBoxscoresViaProvider(sport, eventContext, eventContext.homeTeam, eventContext.homeTeamId, provider, slateCache, summaryCache, recentGames)],
+        ['away', await loadTeamBoxscoresViaProvider(sport, eventContext, eventContext.awayTeam, eventContext.awayTeamId, provider, slateCache, summaryCache, recentGames)]
+      ]);
+    } else {
+      // ESPN-covered sports: reuse the games already found in the form scan.
+      boxscoresBySide = new Map([
+        ['home', await loadRecentTeamBoxscores(sport, homeEntries, provider.fetchSummary, summaryCache, recentGames)],
+        ['away', await loadRecentTeamBoxscores(sport, awayEntries, provider.fetchSummary, summaryCache, recentGames)]
+      ]);
+    }
+  }
+
+  return { homeForm, awayForm, h2hForHome, h2hForAway, boxscoresBySide };
+}
+
+function resolveCandidateTeamSide(candidate, eventContext) {
+  const name = candidate?.outcomeName;
+  if (teamNamesMatch(name, eventContext.homeTeam)) {
+    return 'home';
+  }
+  if (teamNamesMatch(name, eventContext.awayTeam)) {
+    return 'away';
+  }
+  return null;
+}
+
+export function computeCandidateDeepEvidence(sportKey, eventContext, candidate, inputs) {
+  const market = String(candidate?.market || '').toLowerCase();
+  const baseMarket = market.startsWith('first_half_') ? market.slice('first_half_'.length) : market;
+  const options = {
+    minGames: eventContext?.deepAnalysis?.minGames,
+    minHitRate: eventContext?.deepAnalysis?.minHitRate
+  };
+
+  // Player-prop legs: validate the player against the line from recent box scores.
+  const statKeys = getStatKeysForMarket(sportKey, candidate.market);
+  if (candidate.family === 'prop' && statKeys.length) {
+    const games = [
+      ...(inputs.boxscoresBySide?.get('home') || []),
+      ...(inputs.boxscoresBySide?.get('away') || [])
+    ];
+    const series = buildPlayerStatSeries(games, candidate.description, statKeys);
+    return {
+      ...computePropEvidence({ series, line: candidate.point, side: candidate.outcomeName, sport: sportKey, statKeys, options }),
+      type: 'player-form'
+    };
+  }
+
+  if (baseMarket === 'h2h') {
+    const side = resolveCandidateTeamSide(candidate, eventContext);
+    if (!side) {
+      return { status: 'unknown', score: 0, reason: 'Could not resolve the backed team.', type: 'matchup-h2h' };
+    }
+    return {
+      ...computeH2hEvidence({
+        teamForm: side === 'home' ? inputs.homeForm : inputs.awayForm,
+        oppForm: side === 'home' ? inputs.awayForm : inputs.homeForm,
+        h2h: side === 'home' ? inputs.h2hForHome : inputs.h2hForAway,
+        isHome: side === 'home',
+        options
+      }),
+      type: 'matchup-h2h'
+    };
+  }
+
+  if (baseMarket === 'totals') {
+    return {
+      ...computeTotalsEvidence({ homeForm: inputs.homeForm, awayForm: inputs.awayForm, line: candidate.point, side: candidate.outcomeName, options }),
+      type: 'matchup-total'
+    };
+  }
+
+  if (baseMarket === 'spreads') {
+    const side = resolveCandidateTeamSide(candidate, eventContext);
+    if (!side) {
+      return { status: 'unknown', score: 0, reason: 'Could not resolve the backed team.', type: 'matchup-spread' };
+    }
+    return {
+      ...computeSpreadEvidence({
+        teamForm: side === 'home' ? inputs.homeForm : inputs.awayForm,
+        oppForm: side === 'home' ? inputs.awayForm : inputs.homeForm,
+        line: candidate.point,
+        isHome: side === 'home',
+        options
+      }),
+      type: 'matchup-spread'
+    };
+  }
+
+  return { status: 'unknown', score: 0, reason: `No evidence model for ${market}.`, type: 'none' };
+}
+
+export function attachDeepEvidence(sport, eventContext, pool, inputs) {
+  const sportKey = sport?.key || eventContext?.sportKey;
+
+  return pool.map((candidate) => {
+    let evidence;
+    try {
+      evidence = computeCandidateDeepEvidence(sportKey, eventContext, candidate, inputs);
+    } catch {
+      evidence = { status: 'unknown', score: 0, reason: 'Evidence computation error.', type: 'none' };
+    }
+
+    return {
+      ...candidate,
+      evidenceStatus: evidence.status,
+      evidenceScore: evidence.score,
+      evidenceReason: evidence.reason,
+      evidenceType: evidence.type
+    };
+  });
+}
+
 export async function filterCandidatePoolForResearch(sport, eventContext, candidatePool, researchCaches, overrides = {}) {
   const injuryCache = researchCaches?.injury instanceof Map
     ? researchCaches.injury
@@ -2178,16 +2429,38 @@ export async function filterCandidatePoolForResearch(sport, eventContext, candid
     ? researchCaches.weather
     : new Map();
   const injuryResearch = await loadEventInjuryResearch(sport, eventContext, injuryCache, overrides);
-  const mlbResearch = await loadEventMlbResearch(sport, eventContext, researchCaches, overrides);
   const weatherResearch = await loadEventWeatherResearch(sport, eventContext, weatherCache, overrides);
   const formResearch = await loadEventFormResearch(sport, eventContext, researchCaches, overrides);
   eventContext.weather = buildEventWeatherDisplay(weatherResearch) || eventContext.weather || null;
   const aflResearch = await loadEventAflResearch(sport, eventContext, researchCaches, overrides);
   const aflConfirmedPool = await Promise.all(candidatePool.map((candidate) => enrichAflCandidateConfirmation(candidate, sport, eventContext, aflResearch, researchCaches, overrides)));
   const externalSignalResearch = await loadEventExternalSignalResearch(sport, eventContext, aflConfirmedPool, researchCaches, overrides);
-  const researchedPool = aflConfirmedPool.map((candidate) => buildCandidateResearch(candidate, sport, eventContext, injuryResearch, weatherResearch, mlbResearch, formResearch, externalSignalResearch));
+  const researchedPool = aflConfirmedPool.map((candidate) => buildCandidateResearch(candidate, sport, eventContext, injuryResearch, weatherResearch, formResearch, externalSignalResearch));
+  const cleared = researchedPool.filter((candidate) => candidate.researchStatus !== 'blocked');
 
-  return researchedPool.filter((candidate) => candidate.researchStatus !== 'blocked');
+  const deep = eventContext?.deepAnalysis;
+  if (!deep?.enabled) {
+    return cleared;
+  }
+
+  // Deep evidence gate: grade each surviving leg and (when required) keep only
+  // genuinely-supported legs. Fails safe to NO BET on any data error.
+  try {
+    const poolHasProps = cleared.some((candidate) =>
+      candidate.family === 'prop' && getStatKeysForMarket(sport?.key || eventContext?.sportKey, candidate.market).length);
+    const inputs = overrides.deepEvidenceInputs
+      || await loadEventDeepEvidenceInputs(sport, eventContext, researchCaches, overrides, { fetchBoxscores: poolHasProps });
+    const evidenced = attachDeepEvidence(sport, eventContext, cleared, inputs);
+
+    if (deep.requireLegEvidence) {
+      return evidenced.filter((candidate) => candidate.evidenceStatus === PROP_EVIDENCE_STATUS.SUPPORTED);
+    }
+
+    return evidenced;
+  } catch (error) {
+    console.log(`[analysis] deep evidence unavailable for ${eventContext.eventName}: ${error.message}`);
+    return deep.requireLegEvidence ? [] : cleared;
+  }
 }
 
 function getProtectedManualEvents(feed) {
@@ -2282,10 +2555,12 @@ export async function runAnalysisJob(context, overrides = {}) {
     aflProfile: new Map(),
     aflRoster: new Map(),
     aflTeamDirectory: new Map(),
+    boxscore: new Map(),
     form: new Map(),
     injury: new Map(),
     mlb: new Map(),
     mlbSupport: new Map(),
+    officialSlate: new Map(),
     sportsbetTargetBet: new Map(),
     weather: new Map()
   };
@@ -2304,6 +2579,10 @@ export async function runAnalysisJob(context, overrides = {}) {
     if (!events.length) {
       continue;
     }
+
+    // Pool of evidence-supported single legs across this sport's events, used to
+    // assemble cross-game multis after the per-event loop (#34).
+    const crossGameLegPool = [];
 
     for (const event of events) {
       if (quotaExceeded) {
@@ -2334,6 +2613,45 @@ export async function runAnalysisJob(context, overrides = {}) {
 
       if (candidatePool.length < getMinimumCandidateLegsForSport(config, sport.key)) {
         continue;
+      }
+
+      // Harvest evidence-supported single legs for cross-game multi assembly.
+      if (config.analysis?.crossGameMultis?.enabled) {
+        for (const candidate of candidatePool) {
+          if (candidate.evidenceStatus !== 'supported') {
+            continue;
+          }
+          const odds = toNumber(candidate.bestPrice);
+          if (odds === null || odds <= 1) {
+            continue;
+          }
+          crossGameLegPool.push({
+            eventId: eventContext.eventId,
+            espnEventId: eventContext.espnEventId || '',
+            eventName: eventContext.eventName,
+            homeTeam: eventContext.homeTeam,
+            awayTeam: eventContext.awayTeam,
+            startTime: eventContext.startTime,
+            sport: eventContext.sportKey,
+            market: candidate.market,
+            outcomeName: candidate.outcomeName,
+            description: candidate.description || '',
+            point: candidate.point ?? null,
+            odds,
+            label: candidate.label,
+            sourceType: candidate.source,
+            evidenceStatus: candidate.evidenceStatus,
+            evidenceScore: candidate.evidenceScore,
+            evidenceReason: candidate.evidenceReason,
+            evidenceType: candidate.evidenceType,
+            evidence: {
+              status: candidate.evidenceStatus,
+              score: toNumber(candidate.evidenceScore),
+              reason: candidate.evidenceReason || '',
+              type: candidate.evidenceType || ''
+            }
+          });
+        }
       }
 
       considered += 1;
@@ -2391,6 +2709,13 @@ export async function runAnalysisJob(context, overrides = {}) {
         }
       } catch (error) {
         console.log(`[analysis] skipped ${eventContext.eventName}: ${error.message}`);
+      }
+    }
+
+    // Assemble cross-game multis from this sport's pooled supported legs (#34).
+    if (config.analysis?.crossGameMultis?.enabled && crossGameLegPool.length) {
+      for (const crossPick of buildCrossGameMultisForSport(sport, crossGameLegPool, config)) {
+        generatedPicks.push(crossPick);
       }
     }
   }

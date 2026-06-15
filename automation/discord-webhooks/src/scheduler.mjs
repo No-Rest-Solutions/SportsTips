@@ -106,5 +106,31 @@ export function getDueJobs(config, state, date = new Date()) {
     }
   }
 
+  // Promos: daily slip generation, periodic settlement, and an end-of-day report.
+  if (config.jobs?.promos?.enabled) {
+    const generationScheduled = parseMinutes(config.jobs.promos.generationTime || '09:30');
+    const generationRan = state.jobs?.promosGeneration?.lastRunDate === dateKey;
+
+    if (!generationRan && currentMinutes >= generationScheduled) {
+      due.push('promosGeneration');
+    }
+
+    const settlementLastRunAt = state.jobs?.promosSettlement?.lastRunAt
+      ? new Date(state.jobs.promosSettlement.lastRunAt).getTime()
+      : 0;
+    const settlementIntervalMs = Number(config.jobs.promos.settlementIntervalMinutes || 30) * 60 * 1000;
+
+    if (!settlementLastRunAt || date.getTime() - settlementLastRunAt >= settlementIntervalMs) {
+      due.push('promosSettlement');
+    }
+
+    const reportScheduled = parseMinutes(config.jobs.promos.reportTime || '23:30');
+    const reportRan = state.jobs?.promosReport?.lastRunDate === dateKey;
+
+    if (!reportRan && currentMinutes >= reportScheduled) {
+      due.push('promosReport');
+    }
+  }
+
   return due;
 }

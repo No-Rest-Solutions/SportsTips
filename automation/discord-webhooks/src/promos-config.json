@@ -9,9 +9,11 @@
       "maxOdds": 5.0,
       "site": "TAB",
       "market": "player-props",
+      "webhook": "promoAfl",
+      "settlementRule": { "type": "margin-forgiveness", "marginTolerance": 1 },
       "active": true,
       "daysActive": [],
-      "notes": "AFL same-game multi promo"
+      "notes": "AFL same-game multi promo — disposals miss by 1 still wins"
     },
     {
       "id": "nrl-promo-1",
@@ -22,9 +24,11 @@
       "maxOdds": 5.0,
       "site": "TAB",
       "market": "player-props",
+      "webhook": "promoNrl",
+      "settlementRule": { "type": "leg-insurance", "insuredLegs": 1 },
       "active": true,
       "daysActive": [],
-      "notes": "NRL same-game multi promo"
+      "notes": "NRL 3-leg same-game multi — 1 leg fails, stake returned"
     },
     {
       "id": "tab-tennis-h2h",
@@ -35,9 +39,11 @@
       "maxOdds": 5.0,
       "site": "TAB",
       "market": "head2head",
+      "webhook": "promoTennis",
+      "settlementRule": { "type": "leg-insurance", "insuredLegs": 1 },
       "active": true,
       "daysActive": [],
-      "notes": "TAB Tennis H2H 4-leg multi daily"
+      "notes": "TAB Tennis H2H 4-leg multi daily — 1 leg fails, stake returned"
     },
     {
       "id": "tab-soccer-h2h",
@@ -48,9 +54,11 @@
       "maxOdds": 5.0,
       "site": "TAB",
       "market": "head2head",
+      "webhook": "promoSoccer",
+      "settlementRule": { "type": "leg-insurance", "insuredLegs": 1 },
       "active": true,
       "daysActive": [],
-      "notes": "TAB Soccer H2H 4-leg multi daily"
+      "notes": "TAB Soccer H2H 4-leg multi daily — 1 leg fails, stake returned"
     }
   ]
 }

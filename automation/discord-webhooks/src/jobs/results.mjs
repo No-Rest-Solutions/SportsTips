@@ -14,6 +14,8 @@ import { fetchNrlOfficialSlate, fetchNrlOfficialSummary } from '../providers/nrl
 import { loadRawPicksFeed, saveRawPicksFeed } from '../picks-feed.mjs';
 import { getDateKey } from '../scheduler.mjs';
 import { writeSettlementsToWorkspace } from '../settlement-writeback.mjs';
+import { updateEvidenceOutcome } from '../evidence-log.mjs';
+import { fetchTheSportsDbSlate } from '../providers/thesportsdb.mjs';
 import { teamNamesMatch, textMentionsTeam } from '../team-name-matching.mjs';
 
 const SETTLED = new Set(['win', 'loss', 'return']);
@@ -236,7 +238,7 @@ function eventStartTimesMatch(event, pick) {
   return Math.abs(eventStartTimeMs - pickStartTimeMs) <= FALLBACK_EVENT_START_GRACE_MS;
 }
 
-function eventMatchesPick(event, pick) {
+export function eventMatchesPick(event, pick) {
   if (!event || !pick) {
     return false;
   }
@@ -251,9 +253,16 @@ function eventMatchesPick(event, pick) {
     return eventStartTimesMatch(event, pick);
   }
 
-  return teamNamesMatch(event.homeTeam, homeTeam)
-    && teamNamesMatch(event.awayTeam, awayTeam)
-    && eventStartTimesMatch(event, pick);
+  // Tennis (and other individual sports) have no real home/away, and the
+  // bookmaker vs ESPN can assign the two players to opposite sides, so match in
+  // either orientation. Grading still resolves the backed side by name.
+  const orientationAgnostic = String(pick?.sport || '').toLowerCase().startsWith('tennis');
+  const straightMatch = teamNamesMatch(event.homeTeam, homeTeam) && teamNamesMatch(event.awayTeam, awayTeam);
+  const swappedMatch = orientationAgnostic
+    && teamNamesMatch(event.homeTeam, awayTeam)
+    && teamNamesMatch(event.awayTeam, homeTeam);
+
+  return (straightMatch || swappedMatch) && eventStartTimesMatch(event, pick);
 }
 
 function getScoreboardEventKey(homeTeam, awayTeam) {
@@ -487,6 +496,16 @@ function getSettlementSources(sport, overrides = {}) {
     default:
       break;
   }
+
+  // Broad public fallback (results only) consulted when no primary source matched
+  // — hardens settlement for "Other" sports (tennis/NHL/non-EPL soccer) without
+  // raising the agreement bar for primaries.
+  sources.push({
+    key: 'thesportsdb',
+    label: 'TheSportsDB',
+    tier: 'fallback',
+    fetchScoreboard: overrides.fetchTheSportsDbSlate || fetchTheSportsDbSlate
+  });
 
   return sources;
 }
@@ -844,8 +863,11 @@ function resolvePlayerStatsForLeg(leg, propContext) {
   }
 
   if (propContext?.summaryFetched) {
+    // Box score was fetched but the player has no row = did not take the field
+    // (late scratch / DNP). Flagged so settlement can refund the leg (#33).
     return {
       playerStats: null,
+      participation: 'dnp',
       unresolvedReason: `${sourceLabel} did not return a player stat row for ${legLabel}, so auto-settlement was skipped.`
     };
   }
@@ -919,7 +941,7 @@ function getNbaComboStatKeys(sportKey, market) {
   }
 }
 
-function gradePlayerMarketLeg(leg, pick, propContext) {
+export function gradePlayerMarketLeg(leg, pick, propContext) {
   const market = String(leg?.source?.market || '').toLowerCase();
   const comboStatKeys = getNbaComboStatKeys(propContext?.sportKey, market);
   const statKey = getSupportedPlayerStatKey(propContext?.sportKey, market);
@@ -942,7 +964,15 @@ function gradePlayerMarketLeg(leg, pick, propContext) {
     };
   }
 
-  const { playerStats, unresolvedReason } = resolvePlayerStatsForLeg(leg, propContext);
+  const { playerStats, unresolvedReason, participation } = resolvePlayerStatsForLeg(leg, propContext);
+
+  // Late scratch / DNP → refund (void) the leg rather than defer or lose it (#33).
+  if (participation === 'dnp' && propContext?.refundNonParticipants) {
+    return {
+      outcome: 'push',
+      unresolvedReason: null
+    };
+  }
 
   if (unresolvedReason) {
     return {
@@ -969,31 +999,54 @@ function gradePlayerMarketLeg(leg, pick, propContext) {
     };
   }
 
+  let outcome;
   if (outcomeMode === 'at_least') {
-    return {
-      outcome: statValue >= line ? 'win' : 'loss',
-      unresolvedReason: null
-    };
+    outcome = statValue >= line ? 'win' : 'loss';
+  } else if (statValue === line) {
+    outcome = 'push';
+  } else if (outcomeMode === 'over') {
+    outcome = statValue > line ? 'win' : 'loss';
+  } else {
+    outcome = statValue < line ? 'win' : 'loss';
   }
 
-  if (statValue === line) {
-    return {
-      outcome: 'push',
-      unresolvedReason: null
-    };
-  }
-
-  if (outcomeMode === 'over') {
-    return {
-      outcome: statValue > line ? 'win' : 'loss',
-      unresolvedReason: null
-    };
+  // Pulled early (minimal minutes) → refund a LOSING leg rather than count it a
+  // loss; a leg already hit before the player left still wins (#33). Only fires
+  // when minutes data is present and clearly below the sport floor.
+  if (outcome === 'loss' && propContext?.refundNonParticipants && wasPulledEarly(playerStats, propContext?.sportKey)) {
+    outcome = 'push';
   }
 
   return {
-    outcome: statValue < line ? 'win' : 'loss',
+    outcome,
     unresolvedReason: null
   };
+}
+
+// Minutes / time-on-ground fields vary by provider+sport; read the first present.
+function getPlayerMinutes(playerStats) {
+  const keys = ['minutes', 'minutesPlayed', 'min', 'minsPlayed', 'timeOnIce'];
+  for (const key of keys) {
+    const value = toNumber(playerStats?.[key] ?? playerStats?.statValues?.[key]);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+// Floors only for sports whose minutes field is unambiguously in minutes, so we
+// never falsely refund a full-game underperformance. Sports absent here are not
+// minute-voided (the DNP rule still covers their late scratches).
+const PULLED_EARLY_MINUTE_FLOOR = { nba: 12, nrl: 20, nhl: 8 };
+
+function wasPulledEarly(playerStats, sportKey) {
+  const floor = PULLED_EARLY_MINUTE_FLOOR[String(sportKey || '').toLowerCase()];
+  if (!floor) {
+    return false;
+  }
+  const minutes = getPlayerMinutes(playerStats);
+  return minutes !== null && minutes > 0 && minutes < floor;
 }
 
 function getLegLabel(leg) {
@@ -1022,26 +1075,71 @@ function gradeLegForSource(leg, pick, sourceContext) {
   };
 }
 
-function resolveConsensusOutcome(gradeResults, requiredAgreements) {
+// Which source is authoritative for a leg's market type, so a single grade can
+// settle it when no other source can. Player box scores for AFL/NRL come only from
+// the official feed (ESPN/Flashscore carry the scoreline but no player stats), so
+// the official source alone may settle their player props — but ESPN alone must NOT
+// (it isn't reliable for AFL/NRL player data). Every other sport uses ESPN.
+function getAuthoritativePlayerSourceKeys(sportKey) {
+  switch (String(sportKey || '').toLowerCase()) {
+    case 'afl':
+      return ['official_afl'];
+    case 'nrl':
+      return ['official_nrl'];
+    default:
+      return ['espn'];
+  }
+}
+
+export function resolveConsensusOutcome(gradeResults, requiredAgreements, trustedSingleSourceKeys = null) {
   const outcomeCounts = new Map();
+  const outcomeSources = new Map();
+  let gradedCount = 0;
 
   for (const result of gradeResults) {
     if (!result?.outcome) {
       continue;
     }
 
+    gradedCount += 1;
     outcomeCounts.set(result.outcome, (outcomeCounts.get(result.outcome) || 0) + 1);
+
+    if (!outcomeSources.has(result.outcome)) {
+      outcomeSources.set(result.outcome, new Set());
+    }
+    outcomeSources.get(result.outcome).add(result.sourceKey);
   }
+
+  // Cap the agreement bar at the number of sources that could actually grade this
+  // leg. Some legs are only gradeable by ONE source — e.g. AFL/NRL player props,
+  // whose player box scores come only from the official feed. Without this cap those
+  // legs need 2 agreeing sources they can never get, so the whole slip stays pending
+  // forever and its result is never posted. A single confident grade still settles;
+  // two sources that genuinely DISAGREE are still blocked (the tie check below).
+  const effectiveRequired = Math.max(1, Math.min(requiredAgreements, gradedCount));
 
   const rankedOutcomes = [...outcomeCounts.entries()]
     .sort((left, right) => right[1] - left[1] || String(left[0]).localeCompare(String(right[0])));
 
-  if (!rankedOutcomes.length || rankedOutcomes[0][1] < requiredAgreements) {
+  if (!rankedOutcomes.length || rankedOutcomes[0][1] < effectiveRequired) {
     return null;
   }
 
   if (rankedOutcomes.length > 1 && rankedOutcomes[0][1] === rankedOutcomes[1][1]) {
     return null;
+  }
+
+  // When settling BELOW the normal agreement bar (fewer sources graded than usually
+  // required), only trust it if an authoritative source backs the outcome. This lets
+  // the official feed alone settle AFL/NRL player props, while still refusing to
+  // settle them on ESPN alone (which the per-sport routing treats as non-authoritative
+  // for those player stats).
+  if (rankedOutcomes[0][1] < requiredAgreements && Array.isArray(trustedSingleSourceKeys) && trustedSingleSourceKeys.length) {
+    const backingSources = outcomeSources.get(rankedOutcomes[0][0]) || new Set();
+
+    if (!trustedSingleSourceKeys.some((key) => backingSources.has(key))) {
+      return null;
+    }
   }
 
   return rankedOutcomes[0][0];
@@ -1102,7 +1200,7 @@ function buildUnknownFailedLegLoss(pick, gradedLegs, settledAt, noteEvent, settl
   };
 }
 
-function buildAutoSettledPick(pick, sourceContexts, settledAt, priceDecimal = null, requiredAgreements = 1) {
+export function buildAutoSettledPick(pick, sourceContexts, settledAt, priceDecimal = null, requiredAgreements = 1) {
   const originalLegs = Array.isArray(pick?.legs) ? pick.legs : [];
   const unsupportedLegs = [];
   const supportedButMissingLegs = [];
@@ -1119,7 +1217,10 @@ function buildAutoSettledPick(pick, sourceContexts, settledAt, priceDecimal = nu
     }
 
     const gradeResults = sourceContexts.map((sourceContext) => gradeLegForSource(leg, pick, sourceContext));
-    const consensusOutcome = resolveConsensusOutcome(gradeResults, requiredAgreements);
+    const trustedSingleSourceKeys = supportedPlayerMarket && !supportedTeamMarket
+      ? getAuthoritativePlayerSourceKeys(pick?.sport)
+      : null;
+    const consensusOutcome = resolveConsensusOutcome(gradeResults, requiredAgreements, trustedSingleSourceKeys);
 
     if (consensusOutcome) {
       return {
@@ -1187,9 +1288,56 @@ function buildAutoSettledPick(pick, sourceContexts, settledAt, priceDecimal = nu
   }
 
   if (hasPush) {
+    // Partial push: some legs pushed/voided, the rest WON, none lost. Re-settle the
+    // way a bookmaker voids a leg inside a multi — divide the slip's total price by
+    // each voided leg's odds so only the live (winning) legs are priced. This also
+    // completes the DNP/pulled-early refund (#33), which voids a single leg: a multi
+    // with one DNP leg + winning legs used to stick here unresolved forever.
+    const totalPrice = toNumber(priceDecimal) ?? getPickPriceDecimal(pick);
+    const pushLegs = gradedLegs.filter((leg) => PUSH_STATUSES.has(String(leg?.status || '').toLowerCase()));
+    const winningLegs = gradedLegs.filter((leg) => String(leg?.status || '').toLowerCase() === 'win');
+    const pushOddsProduct = pushLegs.reduce((product, leg) => product * (toNumber(leg.odds) || 0), 1);
+
+    if (totalPrice !== null && pushOddsProduct > 0 && winningLegs.length) {
+      const reducedPrice = Math.max(1, roundToTwo(totalPrice / pushOddsProduct));
+      const returnUnits = roundToTwo(stakeUnits * reducedPrice);
+
+      return {
+        settledPick: {
+          ...pick,
+          priceDecimal: reducedPrice,
+          legs: gradedLegs,
+          status: reducedPrice > 1 ? 'win' : 'return',
+          settledAt,
+          returnUnits,
+          netUnits: roundToTwo(returnUnits - stakeUnits),
+          resultNotes: buildAutoSettlementNote(
+            noteEvent,
+            `${pushLegs.length} leg${pushLegs.length === 1 ? '' : 's'} voided/pushed; slip re-priced to ${reducedPrice.toFixed(2)} on the remaining winning legs.`,
+            settlementSourceLabel
+          )
+        },
+        unresolvedReason: null
+      };
+    }
+
+    // Couldn't re-price (missing leg odds or total price) — refund the stake rather
+    // than leaving the slip stuck pending and its result never posted.
     return {
-      settledPick: null,
-      unresolvedReason: 'Final event detected but the slip includes pushes that need reduced-odds repricing before settlement.'
+      settledPick: {
+        ...pick,
+        legs: gradedLegs,
+        status: 'return',
+        settledAt,
+        returnUnits: roundToTwo(stakeUnits),
+        netUnits: 0,
+        resultNotes: buildAutoSettlementNote(
+          noteEvent,
+          'Slip included a voided/pushed leg that could not be re-priced, so the stake was refunded.',
+          settlementSourceLabel
+        )
+      },
+      unresolvedReason: null
     };
   }
 
@@ -1230,12 +1378,176 @@ function buildAutoSettledPick(pick, sourceContexts, settledAt, priceDecimal = nu
   );
 }
 
+// Collect finalized source contexts for one cross-game leg's own event (mirrors
+// the main path's primary/fallback tiering, scoped to a single-leg pseudo pick).
+async function collectCrossGameLegContexts(pseudoPick, sport, dateKeys, caches, config, overrides) {
+  const { scoreboardCache, summaryCache } = caches;
+  const refundNonParticipants = config.jobs?.results?.refundNonParticipants === true;
+  const allSources = getSettlementSources(sport, overrides);
+  const primarySources = allSources.filter((source) => source.tier !== 'fallback');
+  const fallbackSources = config.jobs?.results?.fallbackSettlement === true
+    ? allSources.filter((source) => source.tier === 'fallback')
+    : [];
+
+  const collect = async (sources) => {
+    const contexts = [];
+    for (const source of sources) {
+      let matchedEvent = null;
+      for (const dateKey of dateKeys) {
+        const cacheKey = `${source.key}:${sport.key}:${dateKey}`;
+        if (!scoreboardCache.has(cacheKey)) {
+          scoreboardCache.set(cacheKey, source.fetchScoreboard(sport, dateKey, config.timezone));
+        }
+        let scoreboard;
+        try {
+          scoreboard = await scoreboardCache.get(cacheKey);
+        } catch {
+          continue;
+        }
+        matchedEvent = (scoreboard?.events || []).find((event) =>
+          eventMatchesPick(event, pseudoPick) && String(event.state || '').toLowerCase() === 'post');
+        if (matchedEvent) {
+          break;
+        }
+      }
+      if (!matchedEvent) {
+        continue;
+      }
+
+      let eventForGrading = matchedEvent;
+      let propContext = {
+        sportKey: sport.key,
+        sourceLabel: source.label,
+        playerStatsByName: new Map(),
+        summaryFetched: false,
+        summaryFetchError: '',
+        refundNonParticipants
+      };
+
+      if (source.fetchSummary && source.requiresSummary?.(pseudoPick)) {
+        const summaryCacheKey = getSummaryCacheKey(source.key, matchedEvent);
+        if (!summaryCache.has(summaryCacheKey)) {
+          summaryCache.set(summaryCacheKey, source.fetchSummary(sport, matchedEvent, config.timezone));
+        }
+        try {
+          const summary = await summaryCache.get(summaryCacheKey);
+          propContext = {
+            sportKey: sport.key,
+            sourceLabel: source.label,
+            playerStatsByName: buildPlayerStatsByName(summary?.playerStats),
+            summaryFetched: true,
+            summaryFetchError: '',
+            refundNonParticipants
+          };
+          if (summary?.event) {
+            eventForGrading = { ...matchedEvent, ...summary.event };
+          }
+        } catch {
+          propContext.summaryFetchError = `${source.label} player stats request failed.`;
+        }
+      }
+
+      contexts.push({ sourceKey: source.key, sourceLabel: source.label, event: eventForGrading, propContext });
+    }
+    return contexts;
+  };
+
+  let contexts = await collect(primarySources);
+  let requiredAgreements = primarySources.length > 1 ? 2 : 1;
+  if (!contexts.length && fallbackSources.length) {
+    contexts = await collect(fallbackSources);
+    requiredAgreements = 1;
+  }
+  return { contexts, requiredAgreements };
+}
+
+// Settle a cross-game multi by grading each leg against its OWN game and then
+// combining: any loss => loss; all push/void => return; otherwise win on the
+// product of the winning legs' odds. Defers if any leg can't be graded (#34).
+export async function settleCrossGameMultiPick(pick, context, caches, overrides, settledAt) {
+  const { config } = context;
+  const gradedLegs = [];
+  const unresolved = [];
+
+  for (const leg of Array.isArray(pick.legs) ? pick.legs : []) {
+    const sport = getSettlementSportConfig(config, leg.legSport || pick.sport);
+    const startMs = Date.parse(leg.startTime || '');
+
+    if (!sport?.path || !Number.isFinite(startMs) || !leg.homeTeam || !leg.awayTeam) {
+      gradedLegs.push({ ...leg });
+      unresolved.push(`${getLegLabel(leg)} (missing settlement identity)`);
+      continue;
+    }
+
+    const pseudoPick = {
+      sport: sport.key,
+      homeTeam: leg.homeTeam,
+      awayTeam: leg.awayTeam,
+      startTime: leg.startTime,
+      espnEventId: leg.espnEventId || '',
+      stakeUnits: 1,
+      legs: [{ source: leg.source, label: leg.label }]
+    };
+    const dateKeys = getSettlementDateKeys(startMs, config);
+    const { contexts, requiredAgreements } = await collectCrossGameLegContexts(pseudoPick, sport, dateKeys, caches, config, overrides);
+
+    if (!contexts.length) {
+      gradedLegs.push({ ...leg });
+      unresolved.push(`${getLegLabel(leg)} (no finalized result yet)`);
+      continue;
+    }
+
+    const { settledPick, unresolvedReason } = buildAutoSettledPick(pseudoPick, contexts, settledAt, toNumber(leg.odds), requiredAgreements);
+    if (!settledPick) {
+      gradedLegs.push({ ...leg });
+      unresolved.push(`${getLegLabel(leg)} (${unresolvedReason || 'could not grade'})`);
+      continue;
+    }
+
+    gradedLegs.push({ ...leg, status: settledPick.legs?.[0]?.status || String(settledPick.status || '').toLowerCase() });
+  }
+
+  if (unresolved.length) {
+    return { settledPick: null, unresolvedReason: `Cross-game multi pending: ${unresolved.join('; ')}.` };
+  }
+
+  const statuses = gradedLegs.map((leg) => String(leg.status || '').toLowerCase());
+  const stakeUnits = toNumber(pick.stakeUnits) ?? 0;
+
+  if (statuses.includes('loss')) {
+    return {
+      settledPick: { ...pick, legs: gradedLegs, status: 'loss', settledAt, returnUnits: 0, netUnits: roundToTwo(-stakeUnits), resultNotes: 'Cross-game multi settled as a loss (a leg lost).' },
+      unresolvedReason: null
+    };
+  }
+
+  if (statuses.every((status) => PUSH_STATUSES.has(status))) {
+    return {
+      settledPick: { ...pick, legs: gradedLegs, status: 'return', settledAt, returnUnits: roundToTwo(stakeUnits), netUnits: 0, resultNotes: 'Cross-game multi: all legs voided/pushed — stake returned.' },
+      unresolvedReason: null
+    };
+  }
+
+  // Win on the product of the winning legs' odds (pushed/void legs drop out).
+  const winningOdds = gradedLegs
+    .filter((leg) => String(leg.status || '').toLowerCase() === 'win')
+    .reduce((product, leg) => product * (toNumber(leg.odds) || 1), 1);
+  const returnUnits = roundToTwo(stakeUnits * winningOdds);
+
+  return {
+    settledPick: { ...pick, legs: gradedLegs, status: 'win', priceDecimal: roundToTwo(winningOdds), settledAt, returnUnits, netUnits: roundToTwo(returnUnits - stakeUnits), resultNotes: 'Cross-game multi settled as a win.' },
+    unresolvedReason: null
+  };
+}
+
 async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
   const { config, state } = context;
+  const refundNonParticipants = config.jobs?.results?.refundNonParticipants === true;
   const trackerRowMaps = overrides.trackerRowMaps || buildTrackerRowMaps(await readBankrollTrackerRows(config, now.toISOString()));
   const postedPending = feed.picks.filter((pick) => canAutoSweepPick(pick, state, now, config, trackerRowMaps.openByPickId));
   const scoreboardCache = new Map();
   const summaryCache = new Map();
+  const crossGamePending = [];
   let autoSettled = 0;
   let pendingReview = 0;
   let feedChanged = false;
@@ -1248,6 +1560,14 @@ async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
       ...applyActiveReplacement(state, basePick, openPositionRow),
       ...(trackedStakeUnits !== null ? { stakeUnits: trackedStakeUnits } : {})
     };
+
+    // Cross-game multis have per-leg events; settle them in a dedicated pass below
+    // (the normal flow assumes a single event per slip).
+    if (effectivePick.crossGame) {
+      crossGamePending.push({ basePick, effectivePick });
+      continue;
+    }
+
     const resolvedPriceDecimal = resolvePickPriceDecimal(effectivePick, state, openPositionRow, trackedPickState);
     const sport = getSettlementSportConfig(config, effectivePick?.sport);
 
@@ -1274,9 +1594,10 @@ async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
       continue;
     }
 
-    const sourceContexts = [];
+    const collectSourceContexts = async (sources) => {
+      const collected = [];
 
-    for (const source of settlementSources) {
+      for (const source of sources) {
       let matchedEvent = null;
 
       for (const settlementDateKey of settlementDateKeys) {
@@ -1313,7 +1634,8 @@ async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
         sourceLabel: source.label,
         playerStatsByName: new Map(),
         summaryFetched: false,
-        summaryFetchError: ''
+        summaryFetchError: '',
+        refundNonParticipants
       };
 
       if (source.fetchSummary && source.requiresSummary?.(effectivePick)) {
@@ -1330,7 +1652,8 @@ async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
             sourceLabel: source.label,
             playerStatsByName: buildPlayerStatsByName(summary?.playerStats),
             summaryFetched: true,
-            summaryFetchError: ''
+            summaryFetchError: '',
+            refundNonParticipants
           };
 
           if (summary?.event) {
@@ -1345,24 +1668,45 @@ async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
             sourceLabel: source.label,
             playerStatsByName: new Map(),
             summaryFetched: false,
-            summaryFetchError: `${source.label} player stats request failed, so auto-settlement was deferred pending a retry.`
+            summaryFetchError: `${source.label} player stats request failed, so auto-settlement was deferred pending a retry.`,
+            refundNonParticipants
           };
         }
       }
 
-      sourceContexts.push({
+      collected.push({
         sourceKey: source.key,
         sourceLabel: source.label,
         event: eventForGrading,
         propContext
       });
+      }
+
+      return collected;
+    };
+
+    // Primary sources settle with their usual agreement bar. Fallback sources
+    // (e.g. TheSportsDB) are only consulted when NO primary matched, and a single
+    // fallback match settles — so adding fallbacks never raises the bar for
+    // primaries (see docs/DATA-SOURCES.md consensus caveat).
+    const primarySources = settlementSources.filter((source) => source.tier !== 'fallback');
+    // Fallback result sources are opt-in (config.results.fallbackSettlement) so
+    // tests/mocks never reach the network; production enables it in config.json.
+    const fallbackSources = config.jobs?.results?.fallbackSettlement === true
+      ? settlementSources.filter((source) => source.tier === 'fallback')
+      : [];
+
+    let sourceContexts = await collectSourceContexts(primarySources);
+    let requiredAgreements = primarySources.length > 1 ? 2 : 1;
+
+    if (!sourceContexts.length && fallbackSources.length) {
+      sourceContexts = await collectSourceContexts(fallbackSources);
+      requiredAgreements = 1;
     }
 
     if (!sourceContexts.length) {
       continue;
     }
-
-    const requiredAgreements = settlementSources.length > 1 ? 2 : 1;
 
     const { settledPick, unresolvedReason } = buildAutoSettledPick(
       effectivePick,
@@ -1439,6 +1783,50 @@ async function autoSettlePendingPicks(context, feed, now, overrides = {}) {
       };
     }
 
+    autoSettled += 1;
+    feedChanged = true;
+  }
+
+  // Dedicated cross-game multi settlement pass (each leg graded vs its own game).
+  for (const { basePick, effectivePick } of crossGamePending) {
+    const { settledPick, unresolvedReason } = await settleCrossGameMultiPick(
+      effectivePick,
+      context,
+      { scoreboardCache, summaryCache },
+      overrides,
+      now.toISOString()
+    );
+
+    if (!settledPick) {
+      state.tracking ??= {};
+      state.tracking.picks ??= {};
+      state.tracking.picks[basePick.id] = {
+        ...(state.tracking.picks[basePick.id] || {}),
+        postedAt: state.tracking.picks[basePick.id]?.postedAt || state.posts?.picks?.[basePick.id] || now.toISOString(),
+        finalEventDetectedAt: now.toISOString(),
+        settlementPendingReason: unresolvedReason,
+        lastCheckedAt: now.toISOString()
+      };
+      pendingReview += 1;
+      continue;
+    }
+
+    const feedPick = feed.picks.find((pick) => pick.id === basePick.id);
+    if (!feedPick) {
+      continue;
+    }
+
+    feedPick.status = settledPick.status;
+    feedPick.settledAt = settledPick.settledAt;
+    feedPick.returnUnits = settledPick.returnUnits;
+    feedPick.netUnits = settledPick.netUnits;
+    feedPick.priceDecimal = settledPick.priceDecimal ?? feedPick.priceDecimal;
+    feedPick.resultNotes = settledPick.resultNotes;
+    feedPick.legs = settledPick.legs;
+    if (state.tracking?.picks?.[basePick.id]) {
+      state.tracking.picks[basePick.id].settlementPendingReason = null;
+      state.tracking.picks[basePick.id].autoSettledAt = now.toISOString();
+    }
     autoSettled += 1;
     feedChanged = true;
   }
@@ -1864,8 +2252,26 @@ export async function runResultsJob(context, overrides = {}) {
   await writeSettlementsToWorkspace(context, settled, feed);
 
   for (const pick of settled) {
+    // Map closing odds captured during pre-game rechecks onto the legs so the
+    // evidence log can compute CLV (#29).
+    const closingOddsByLeg = state.tracking?.picks?.[pick.id]?.closingOddsByLeg;
+    if (closingOddsByLeg && Array.isArray(pick.legs)) {
+      for (const leg of pick.legs) {
+        const closing = toNumber(closingOddsByLeg[String(leg?.id || '')]);
+        if (closing !== null) {
+          leg.closingOdds = closing;
+        }
+      }
+    }
+
     state.posts.results[pick.id] = now.toISOString();
     delete state.tracking?.picks?.[pick.id];
+
+    // Back-fill the evidence review log with this slip's outcome (and CLV when
+    // closing odds were captured). Never blocks settlement.
+    if (!dryRun) {
+      await updateEvidenceOutcome(config.__paths.evidenceLogFile, pick);
+    }
   }
 
   state.jobs.results = {

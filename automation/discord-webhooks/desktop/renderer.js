@@ -46,6 +46,7 @@
   reviewResults: document.getElementById('review-results'),
   reanalyzeSlipBtn: document.getElementById('reanalyze-slip-btn'),
   analyzeAllSlipsBtn: document.getElementById('analyze-all-slips-btn'),
+  fullScanBtn: document.getElementById('full-scan-btn'),
   runReferralsNow: document.getElementById('run-referrals-now'),
   runReferralsFeedback: document.getElementById('run-referrals-feedback'),
   quickActionsFeedback: document.getElementById('quick-actions-feedback'),
@@ -77,6 +78,11 @@
   settingWebhookReferralsMasterlist: document.getElementById('setting-webhook-referrals-masterlist'),
   settingWebhookUnitTracking: document.getElementById('setting-webhook-unit-tracking'),
   settingWebhookUnitReport: document.getElementById('setting-webhook-unit-report'),
+  settingWebhookPromoAfl: document.getElementById('setting-webhook-promo-afl'),
+  settingWebhookPromoNrl: document.getElementById('setting-webhook-promo-nrl'),
+  settingWebhookPromoTennis: document.getElementById('setting-webhook-promo-tennis'),
+  settingWebhookPromoSoccer: document.getElementById('setting-webhook-promo-soccer'),
+  settingWebhookEvidence: document.getElementById('setting-webhook-evidence'),
   settingRoleEnabled: document.getElementById('setting-role-enabled'),
   settingRoleText: document.getElementById('setting-role-text'),
   settingRoleSlates: document.getElementById('setting-role-slates'),
@@ -613,6 +619,11 @@ function renderSettings(settings) {
   setInputValue(elements.quickWebhookReferralsMasterlist, settings.webhooks?.referralsMasterlist || '');
   elements.settingWebhookUnitTracking.value = settings.webhooks?.unitTracking || '';
   elements.settingWebhookUnitReport.value = settings.webhooks?.unitReport || '';
+  elements.settingWebhookPromoAfl.value = settings.webhooks?.promoAfl || '';
+  elements.settingWebhookPromoNrl.value = settings.webhooks?.promoNrl || '';
+  elements.settingWebhookPromoTennis.value = settings.webhooks?.promoTennis || '';
+  elements.settingWebhookPromoSoccer.value = settings.webhooks?.promoSoccer || '';
+  elements.settingWebhookEvidence.value = settings.webhooks?.evidence || '';
   elements.settingRoleEnabled.checked = Boolean(settings.roleMentions?.enabled);
   elements.settingRoleText.value = settings.roleMentions?.slates || '';
   elements.settingRoleSlates.value = pickRoles.shared || '';
@@ -739,7 +750,12 @@ function collectSettings() {
       referralsCancelled: elements.settingWebhookReferralsCancelled.value.trim(),
       referralsMasterlist: elements.settingWebhookReferralsMasterlist.value.trim(),
       unitTracking: elements.settingWebhookUnitTracking.value.trim(),
-      unitReport: elements.settingWebhookUnitReport.value.trim()
+      unitReport: elements.settingWebhookUnitReport.value.trim(),
+      promoAfl: elements.settingWebhookPromoAfl.value.trim(),
+      promoNrl: elements.settingWebhookPromoNrl.value.trim(),
+      promoTennis: elements.settingWebhookPromoTennis.value.trim(),
+      promoSoccer: elements.settingWebhookPromoSoccer.value.trim(),
+      evidence: elements.settingWebhookEvidence.value.trim()
     },
     roleMentions: {
       enabled: elements.settingRoleEnabled.checked,
@@ -1095,6 +1111,30 @@ async function analyzeAllSlips() {
   }
 }
 
+async function fullScan() {
+  elements.fullScanBtn.disabled = true;
+  elements.quickActionsFeedback.textContent = 'Full scan: posting daily slates, generating + re-evaluating picks, settling results...';
+
+  try {
+    const r = await window.sportsTipsDesktop.fullScan();
+    const parts = [
+      `Full scan complete${r.dryRun ? ' (dry run)' : ''}`,
+      `${r.slatesPosted} slate post${r.slatesPosted === 1 ? '' : 's'}`,
+      `${r.analysisGenerated} generated / ${r.analysisConsidered} considered`,
+      `${r.picksPosted} pick${r.picksPosted === 1 ? '' : 's'} posted`,
+      `${r.resultsPosted} result${r.resultsPosted === 1 ? '' : 's'} (${r.autoSettled} settled, ${r.pendingReview} pending)`
+    ];
+    if (Array.isArray(r.errors) && r.errors.length) {
+      parts.push(`${r.errors.length} job error${r.errors.length === 1 ? '' : 's'}: ${r.errors.join('; ')}`);
+    }
+    elements.quickActionsFeedback.textContent = parts.join(' · ') + '.';
+  } catch (error) {
+    elements.quickActionsFeedback.textContent = error.message;
+  } finally {
+    elements.fullScanBtn.disabled = false;
+  }
+}
+
 async function verifyReferral(offerId) {
   if (!offerId) {
     return;
@@ -1127,6 +1167,11 @@ for (const input of [
   elements.settingWebhookPicksOther,
   elements.settingWebhookUnitTracking,
   elements.settingWebhookUnitReport,
+  elements.settingWebhookPromoAfl,
+  elements.settingWebhookPromoNrl,
+  elements.settingWebhookPromoTennis,
+  elements.settingWebhookPromoSoccer,
+  elements.settingWebhookEvidence,
   elements.settingRoleEnabled,
   elements.settingRoleText,
   elements.settingRoleSlates,
@@ -1211,6 +1256,10 @@ elements.applyReanalyzedPickBtn.addEventListener('click', () => {
 
 elements.analyzeAllSlipsBtn.addEventListener('click', () => {
   analyzeAllSlips();
+});
+
+elements.fullScanBtn.addEventListener('click', () => {
+  fullScan();
 });
 
 elements.runReferralsNow.addEventListener('click', () => {

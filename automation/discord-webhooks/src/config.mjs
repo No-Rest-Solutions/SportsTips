@@ -177,7 +177,12 @@ export async function loadConfig(configPathArg) {
       referralsMasterlist: rawWebhooks.referralsMasterlist || '',
       results: rawWebhooks.results || '',
       unitTracking: rawWebhooks.unitTracking || rawWebhooks.results || '',
-      unitReport: rawWebhooks.unitReport || ''
+      unitReport: rawWebhooks.unitReport || '',
+      promoAfl: rawWebhooks.promoAfl || '',
+      promoNrl: rawWebhooks.promoNrl || '',
+      promoTennis: rawWebhooks.promoTennis || '',
+      promoSoccer: rawWebhooks.promoSoccer || '',
+      evidence: rawWebhooks.evidence || ''
     },
     roleMentions: normalizeRoleMentions(config.discord?.roleMentions)
   };
@@ -303,11 +308,23 @@ export async function loadConfig(configPathArg) {
     results: {
       enabled: Boolean(config.jobs?.results?.enabled),
       intervalMinutes: numberOrFallback(config.jobs?.results?.intervalMinutes, 15),
-      settlementSweepHours: numberOrFallback(config.jobs?.results?.settlementSweepHours, 3)
+      settlementSweepHours: numberOrFallback(config.jobs?.results?.settlementSweepHours, 3),
+      // Consult broad public fallback result sources (e.g. TheSportsDB) when no
+      // primary source matched. Off by default so tests never hit the network.
+      fallbackSettlement: config.jobs?.results?.fallbackSettlement === true,
+      // Refund (void) a player-prop leg when the player was a late scratch / DNP
+      // or was pulled early (minimal minutes) rather than grading it a loss (#33).
+      refundNonParticipants: config.jobs?.results?.refundNonParticipants === true
     },
     tabMenu: {
       enabled: config.jobs?.tabMenu?.enabled !== false && config.tab?.enabled !== false,
       time: config.jobs?.tabMenu?.time || '05:00'
+    },
+    promos: {
+      enabled: Boolean(config.jobs?.promos?.enabled),
+      generationTime: config.jobs?.promos?.generationTime || '09:30',
+      settlementIntervalMinutes: numberOrFallback(config.jobs?.promos?.settlementIntervalMinutes, 30),
+      reportTime: config.jobs?.promos?.reportTime || '23:30'
     }
   };
 
@@ -370,6 +387,28 @@ export async function loadConfig(configPathArg) {
       stakeUnits: numberOrFallback(config.analysis?.generator?.stakeUnits, 1),
       maxStakeUnits: Math.min(2, numberOrFallback(config.analysis?.generator?.maxStakeUnits, 2)),
       teamSportsH2hPolicy: normalizeTeamSportsH2hPolicy(config.analysis?.generator?.teamSportsH2hPolicy)
+    },
+    // Deep per-leg analysis (rules-layer research evidence). When enabled, every
+    // candidate leg is graded against real form/matchup data and, when
+    // requireLegEvidence is on, only evidence-"supported" legs survive — so the
+    // engine posts researched slips or NO BET. See docs/DEEP-ANALYSIS.md.
+    deepAnalysis: {
+      enabled: Boolean(config.analysis?.deepAnalysis?.enabled),
+      requireLegEvidence: config.analysis?.deepAnalysis?.requireLegEvidence !== false,
+      recentGames: numberOrFallback(config.analysis?.deepAnalysis?.recentGames, 5),
+      minGames: numberOrFallback(config.analysis?.deepAnalysis?.minGames, 4),
+      minHitRate: numberOrFallback(config.analysis?.deepAnalysis?.minHitRate, 0.6)
+    },
+    // Cross-game multis: combine evidence-supported legs from DIFFERENT games into
+    // one multi (e.g. 3 teams' total corners). Off by default. Each leg is graded
+    // against its own game at settlement. See cross-game-multis.mjs.
+    crossGameMultis: {
+      enabled: Boolean(config.analysis?.crossGameMultis?.enabled),
+      legCount: numberOrFallback(config.analysis?.crossGameMultis?.legCount, 3),
+      minOdds: numberOrFallback(config.analysis?.crossGameMultis?.minOdds, 2.0),
+      maxOdds: numberOrFallback(config.analysis?.crossGameMultis?.maxOdds, 3.0),
+      maxPicksPerSport: numberOrFallback(config.analysis?.crossGameMultis?.maxPicksPerSport, 1),
+      stakeUnits: numberOrFallback(config.analysis?.crossGameMultis?.stakeUnits, 1)
     }
   };
 
@@ -393,15 +432,12 @@ export async function loadConfig(configPathArg) {
     weeklyProfitTrackerFile: resolveWorkspacePath(config.profitTrackerFile || config.weeklyProfitTrackerFile || '30-day-profit-tracker.md'),
     bankrollTrackerFile: resolveWorkspacePath(config.bankrollTracker?.csvFile || 'automation/discord-webhooks/bot-bankroll-tracker.csv'),
     losingLegsReportFile: resolveWorkspacePath(config.bankrollTracker?.losingLegsReportFile || 'automation/discord-webhooks/bot-losing-legs-report.md'),
+    evidenceLogFile: resolveWorkspacePath(config.evidenceLogFile || 'automation/discord-webhooks/bot-evidence-log.csv'),
     referralsCatalogFile: resolveWorkspacePath(config.referrals.catalogFile),
     referralsHistoryFile: resolveWorkspacePath(config.referrals.historyFile)
   };
 
   return config;
-}
-
-export function getWorkspaceRoot() {
-  return getResolvedWorkspaceRoot();
 }
 
 export async function loadRawConfigFile(configPathArg) {

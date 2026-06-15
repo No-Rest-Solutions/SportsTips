@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder build --win --portable",
+    "build": "electron-builder build --win",
     "discord:gui": "electron .",
     "discord:gui:smoke": "electron . --smoke-test"
   },
@@ -16,5 +16,9 @@
   },
   "dependencies": {
     "playwright-core": "^1.60.0"
+  },
+  "devDependencies": {
+    "electron": "^42.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

@@ -2,6 +2,7 @@ import { loadConfig } from './config.mjs';
 import { prepareFreshDailyCheck, runForcedDailyCheck } from './forced-daily-check.mjs';
 import { runAnalysisJob } from './jobs/analysis.mjs';
 import { runPicksJob } from './jobs/picks.mjs';
+import { runPromoGenerationJob, runPromoSettlementJob, runPromoReportJob } from './jobs/promos.mjs';
 import { runReferralsJob } from './jobs/referrals.mjs';
 import { runResultsJob } from './jobs/results.mjs';
 import { runSlatesJob } from './jobs/slates.mjs';
@@ -18,7 +19,10 @@ const JOBS = {
   referrals: runReferralsJob,
   results: runResultsJob,
   trackerSummary: runTrackerSummaryJob,
-  tabMenu: runTabMenuJob
+  tabMenu: runTabMenuJob,
+  promosGeneration: runPromoGenerationJob,
+  promosSettlement: runPromoSettlementJob,
+  promosReport: runPromoReportJob
 };
 const RESULT_TEAM_MARKET_SUMMARY = 'h2h, spreads, totals, double_chance, and first-half variants';
 const RESULT_PLAYER_MARKETS_BY_SPORT = {
@@ -277,12 +281,14 @@ async function runDoctor(config, state) {
   console.log(`Unit Report webhook: ${config.discord.webhooks.unitReport ? 'configured' : 'missing'}`);
   console.log(`OpenAI: ${config.openai.enabled ? (config.openai.apiKey ? `configured via ${config.openai.apiKeyEnv} (${config.openai.model})` : `missing ${config.openai.apiKeyEnv} (${config.openai.model})`) : 'disabled'}`);
   console.log(`Analysis engine: ${config.analysis.engine}${config.analysis.engine === 'auto' ? ' (OpenAI when available, rules fallback otherwise)' : ''}`);
+  console.log(`Deep analysis: ${config.analysis.deepAnalysis?.enabled ? `enabled | ${config.analysis.deepAnalysis.requireLegEvidence ? 'HARD GATE (only evidence-supported legs)' : 'observe only (no gating)'} | last ${config.analysis.deepAnalysis.recentGames} games, min ${config.analysis.deepAnalysis.minGames}, hit-rate ${config.analysis.deepAnalysis.minHitRate}` : 'disabled'}`);
   console.log(`Market scrape: ${config.marketScrape.enabled ? `enabled | ${config.marketScrape.bookmakerTitle} -> ${config.__paths.snapshotFile} | refresh ${config.marketScrape.refreshIntervalMinutes}m | freshness ${config.marketScrape.maxSnapshotAgeMinutes}m` : 'disabled'}`);
   console.log(`Runtime status file: ${config.__paths.runtimeStatusFile}`);
   console.log(`Analysis timing: ${config.jobs.analysis.enabled ? `${config.jobs.analysis.time} start | every ${config.jobs.analysis.intervalMinutes}m | ${config.analysis.lookaheadHours}h lookahead` : 'disabled'}`);
   console.log(`Picks timing: shortlist ${config.jobs.picks.shortlistHours}h out | post window ${config.jobs.picks.postWindowHours}h | recheck ${config.jobs.picks.preWindowCheckMinutes}m outside window and ${config.jobs.picks.inWindowCheckMinutes}m inside window`);
   console.log(`Referrals timing: ${config.jobs.referrals.enabled ? `${config.jobs.referrals.time} start | every ${config.jobs.referrals.intervalMinutes}m | catalog ${config.__paths.referralsCatalogFile}` : 'disabled'}`);
   console.log(`Tracker summary: ${config.bankrollTracker?.enabled !== false ? `${config.bankrollTracker.summaryTime} via ${config.bankrollTracker.summaryWebhook || 'unitReport'} webhook` : 'disabled'}`);
+  console.log(`Promos: ${config.jobs?.promos?.enabled ? `generate ${config.jobs.promos.generationTime} | settle every ${config.jobs.promos.settlementIntervalMinutes}m | report ${config.jobs.promos.reportTime}` : 'disabled'}`);
   console.log(`Cached validation entries: ${Object.keys(state.cache?.oddsValidation || {}).length}`);
 
   if (state.providers?.marketScrape?.lastQuoteCount !== undefined) {

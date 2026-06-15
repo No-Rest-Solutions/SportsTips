@@ -1,15 +1,15 @@
-# Soccer / UCL Tracker
+# Soccer / World Cup Tracker
 
 ## Current Totals
 
 | Metric | Value |
 | --- | ---: |
 | Wins | 5 |
-| Losses | 3 |
+| Losses | 4 |
 | Returns/Voided | 0 |
-| Settled Bets | 8 |
-| Win % | 62.50% |
-| Net Units | 1.96 |
+| Settled Bets | 9 |
+| Win % | 55.56% |
+| Net Units | 1.46 |
 | Last Updated | 05/12/2026 AEDT |
 
 ## Notes

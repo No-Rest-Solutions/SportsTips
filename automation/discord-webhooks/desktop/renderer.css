@@ -1,17 +1,18 @@
 :root {
   color-scheme: dark;
-  --bg: #09111f;
-  --bg-soft: #102038;
-  --panel: rgba(7, 18, 36, 0.78);
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --text: #f4f7fb;
-  --muted: #a8b8cc;
-  --accent: #ff8a00;
-  --accent-strong: #ffb000;
-  --ok: #3fd28e;
+  /* Palette matched to norestsolutions.com (near-black + purple accent). */
+  --bg: #09090d;
+  --bg-soft: #0f1017;
+  --panel: rgba(255, 255, 255, 0.04);
+  --panel-border: rgba(255, 255, 255, 0.1);
+  --text: #f3f1f8;
+  --muted: #b6b2c4;
+  --accent: #7856ff;
+  --accent-strong: #9277ff;
+  --ok: #b7ffd7;
   --warn: #ffcc4d;
   --danger: #ff6b6b;
-  --shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
 * {
@@ -24,9 +25,9 @@ body {
   font-family: "Segoe UI Variable Display", "Trebuchet MS", sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at top right, rgba(255, 138, 0, 0.2), transparent 28%),
-    radial-gradient(circle at bottom left, rgba(71, 118, 230, 0.18), transparent 30%),
-    linear-gradient(160deg, #060d18 0%, #09111f 55%, #102038 100%);
+    radial-gradient(circle at top right, rgba(120, 86, 255, 0.22), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(120, 86, 255, 0.1), transparent 32%),
+    linear-gradient(180deg, #09090d 0%, #0b0c12 55%, #0f1017 100%);
 }
 
 .shell {
@@ -42,6 +43,12 @@ body {
   border-radius: 22px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(14px);
+}
+
+/* The [hidden] attribute must always win, even over display:grid/flex panels —
+   otherwise toggled panels (e.g. the tracked-slips details) can't close. */
+[hidden] {
+  display: none !important;
 }
 
 .hero {
@@ -102,9 +109,9 @@ h2 {
   border-radius: 32px;
   font-size: 1.05rem;
   font-weight: 700;
-  color: #09111f;
-  background: linear-gradient(145deg, #ffb000, #ff6b00);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 18px 40px rgba(255, 122, 0, 0.35);
+  color: #ffffff;
+  background: linear-gradient(145deg, #9277ff, #7856ff);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 18px 40px rgba(120, 86, 255, 0.4);
 }
 
 .power-button.is-running {
@@ -152,7 +159,7 @@ h2 {
 }
 
 .stat-panel.accent {
-  background: linear-gradient(160deg, rgba(255, 122, 0, 0.16), rgba(7, 18, 36, 0.9));
+  background: linear-gradient(160deg, rgba(120, 86, 255, 0.16), rgba(15, 16, 23, 0.9));
 }
 
 .label {
