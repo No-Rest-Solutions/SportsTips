@@ -342,6 +342,36 @@ function getTrackerConfig(config) {
   };
 }
 
+// MLB runs on its own isolated ledger. Routing happens at the call sites: MLB picks
+// are tracked with buildMlbLedgerConfig(config) (its own CSV + units + webhooks),
+// everything else uses the main config untouched — so the main bankroll never sees
+// an MLB row.
+export function isMlbLedgerPick(pick) {
+  return String(pick?.sport || '').toLowerCase() === 'mlb';
+}
+
+export function buildMlbLedgerConfig(config) {
+  const mlb = config?.bankrollTracker?.mlb || {};
+
+  return {
+    ...config,
+    bankrollTracker: {
+      ...config?.bankrollTracker,
+      startingBankrollUnits: mlb.startingBankrollUnits ?? config?.bankrollTracker?.startingBankrollUnits,
+      unitSizeAud: mlb.unitSizeAud ?? config?.bankrollTracker?.unitSizeAud,
+      settlementWebhook: mlb.settlementWebhook || 'mlbTracking',
+      summaryWebhook: mlb.summaryWebhook || 'mlbReport'
+    },
+    __paths: {
+      ...config?.__paths,
+      // NO fallback to the main CSV: if the MLB ledger isn't configured, MLB tracking
+      // simply no-ops (null filePath) instead of writing MLB rows into the main bankroll.
+      bankrollTrackerFile: mlb.csvFile || null,
+      losingLegsReportFile: mlb.losingLegsReportFile || null
+    }
+  };
+}
+
 function buildInitRow(trackerConfig, timestamp) {
   const startingBankrollUnits = roundToTwo(trackerConfig.startingBankrollUnits);
   const bankrollAud = formatAudFromUnits(startingBankrollUnits, trackerConfig.unitSizeAud);

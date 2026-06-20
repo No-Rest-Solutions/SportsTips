@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 
 import { analyzeEventWithOpenAi, analyzeEventWithRules, buildAnalysisCandidatePool, buildPickFromAnalysisDecision } from '../ai-pick-generator.mjs';
-import { buildDailyTrackerSummary } from '../bot-tracker.mjs';
+import { buildDailyTrackerSummary, buildMlbLedgerConfig } from '../bot-tracker.mjs';
 import { mergeGeneratedPicks, mergeQuoteEntries } from '../pick-generator.mjs';
+import { buildTeamSgmDecision, isTeamSgmSport } from '../team-sgm.mjs';
 import { loadRawPicksFeed, saveRawPicksFeed } from '../picks-feed.mjs';
 import { fetchAflClubTeamRoster, fetchAflOfficialPlayer, fetchAflOfficialSlate, fetchAflOfficialSummary, fetchAflOfficialTeams, fetchAflStatsProPlayerProfile } from '../providers/afl-official.mjs';
 import { fetchEspnSlate, fetchEspnSummary } from '../providers/espn.mjs';
@@ -802,7 +803,9 @@ function getMinimumCandidateLegsForSport(config, sportKey) {
   }
 
   if (normalizedSportKey === 'mlb') {
-    return Math.min(configuredMinimum, 2);
+    // A single featured market (run line / moneyline) is a complete MLB pick (v4),
+    // so one qualifying candidate is enough to consider the event.
+    return 1;
   }
 
   if (normalizedSportKey.startsWith('tennis')) {
@@ -2228,6 +2231,13 @@ async function loadTeamBoxscoresViaProvider(sport, eventContext, teamName, teamI
 
 export async function loadEventDeepEvidenceInputs(sport, eventContext, researchCaches, overrides = {}, options = {}) {
   const fetchScoreboard = overrides.fetchEspnSlate || fetchEspnSlate;
+  // NRL's configured path (rugbyleague_nrl) is NOT a valid ESPN scoreboard path, so the
+  // recent-form scan silently returns nothing and every NRL team-market leg grades
+  // "unknown". Use ESPN's rugby-league/3 (web) for the form scan — the same source
+  // settlement already uses for NRL — so NRL team form actually loads.
+  const formScoreboardSport = String(sport?.key || '').toLowerCase() === 'nrl'
+    ? { ...sport, path: 'rugby-league/3', apiVariant: 'web' }
+    : sport;
   const formCache = researchCaches?.form instanceof Map ? researchCaches.form : new Map();
   const summaryCache = researchCaches?.boxscore instanceof Map ? researchCaches.boxscore : new Map();
   const recentGames = Number(eventContext?.deepAnalysis?.recentGames || 5);
@@ -2236,12 +2246,12 @@ export async function loadEventDeepEvidenceInputs(sport, eventContext, researchC
   const seenHome = new Set();
   const seenAway = new Set();
 
-  if (sport?.path && eventContext?.homeTeam && eventContext?.awayTeam && eventContext?.startTime) {
-    for (const dateKey of buildRecentFormDateKeys(sport, eventContext)) {
+  if (formScoreboardSport?.path && eventContext?.homeTeam && eventContext?.awayTeam && eventContext?.startTime) {
+    for (const dateKey of buildRecentFormDateKeys(formScoreboardSport, eventContext)) {
       const cacheKey = `${sport.key}:${dateKey}`;
 
       if (!formCache.has(cacheKey)) {
-        formCache.set(cacheKey, fetchScoreboard(sport, dateKey));
+        formCache.set(cacheKey, fetchScoreboard(formScoreboardSport, dateKey));
       }
 
       let scoreboard;
@@ -2334,6 +2344,30 @@ function resolveCandidateTeamSide(candidate, eventContext) {
   return null;
 }
 
+// Resolve a player prop's numeric line + comparison side. Bookmaker "N+" threshold
+// markets (e.g. "20+ Disposals", "6+ Points") carry the line in the outcome NAME, not
+// candidate.point, so parse it — otherwise the evidence layer sees no line and grades
+// every AFL/NRL prop "unknown" (which the hard gate then drops).
+export function resolvePropLineAndSide(candidate) {
+  const name = String(candidate?.outcomeName || candidate?.label || '');
+  const explicitPoint = toNumber(candidate?.point);
+  const lower = name.toLowerCase();
+  const numeric = name.match(/(\d+(?:\.\d+)?)/);
+
+  const atLeast = name.match(/(\d+(?:\.\d+)?)\s*\+/);
+  if (atLeast) {
+    return { line: explicitPoint ?? Number(atLeast[1]), side: 'at least' };
+  }
+  if (lower.includes('under')) {
+    return { line: explicitPoint ?? (numeric ? Number(numeric[1]) : null), side: 'under' };
+  }
+  if (lower.includes('over')) {
+    return { line: explicitPoint ?? (numeric ? Number(numeric[1]) : null), side: 'over' };
+  }
+
+  return { line: explicitPoint, side: name };
+}
+
 export function computeCandidateDeepEvidence(sportKey, eventContext, candidate, inputs) {
   const market = String(candidate?.market || '').toLowerCase();
   const baseMarket = market.startsWith('first_half_') ? market.slice('first_half_'.length) : market;
@@ -2350,8 +2384,9 @@ export function computeCandidateDeepEvidence(sportKey, eventContext, candidate, 
       ...(inputs.boxscoresBySide?.get('away') || [])
     ];
     const series = buildPlayerStatSeries(games, candidate.description, statKeys);
+    const { line: propLine, side: propSide } = resolvePropLineAndSide(candidate);
     return {
-      ...computePropEvidence({ series, line: candidate.point, side: candidate.outcomeName, sport: sportKey, statKeys, options }),
+      ...computePropEvidence({ series, line: propLine, side: propSide, sport: sportKey, statKeys, options }),
       type: 'player-form'
     };
   }
@@ -2416,7 +2451,12 @@ export function attachDeepEvidence(sport, eventContext, pool, inputs) {
       evidenceStatus: evidence.status,
       evidenceScore: evidence.score,
       evidenceReason: evidence.reason,
-      evidenceType: evidence.type
+      evidenceType: evidence.type,
+      // Carry the actual analytics through so downstream selection ranks on STATS (recent
+      // hit-rate / buffer / sample size), not on price.
+      evidenceHitRate: evidence.hitRate ?? null,
+      evidenceBuffer: evidence.buffer ?? null,
+      evidenceGames: evidence.gamesPlayed ?? null
     };
   });
 }
@@ -2526,6 +2566,8 @@ export async function runAnalysisJob(context, overrides = {}) {
 
   const feed = await loadFeed(config.__paths.picksFeedFile);
   const bankrollContext = await loadBankrollContext(config);
+  // MLB sizes its stakes from its own isolated bankroll ledger.
+  const mlbBankrollContext = await loadBankrollContext(buildMlbLedgerConfig(config));
   const protectedManualEvents = getProtectedManualEvents(feed);
   const snapshot = overrides.snapshot || await ensureFreshScrapedSnapshot(context, now, {
     force: overrides.forceSnapshotRefresh
@@ -2602,6 +2644,7 @@ export async function runAnalysisJob(context, overrides = {}) {
         ? event.snapshotQuotes
         : getSnapshotEventQuotes(snapshot, config, sport.marketKey || sport.key, event);
       const mergedQuotes = mergeQuoteEntries(snapshotQuotes);
+
       const isAfl = normalizeText(sport.key) === 'afl';
       const maxCandidateLegs = isAfl ? 24 : Number(config.analysis.maxCandidateLegsPerEvent || 14);
       let candidatePool = buildAnalysisCandidatePool(
@@ -2609,9 +2652,49 @@ export async function runAnalysisJob(context, overrides = {}) {
         mergedQuotes,
         maxCandidateLegs
       );
-      candidatePool = await filterCandidatePoolForResearch(sport, eventContext, candidatePool, researchCaches, overrides);
+      const teamSgmEnabled = config.analysis?.teamSgm?.enabled !== false && isTeamSgmSport(sport.key);
 
-      if (candidatePool.length < getMinimumCandidateLegsForSport(config, sport.key)) {
+      // Require enough RAW markets to be worth analysing, BEFORE the evidence gate trims
+      // the pool (the MLB perf guard). SGM sports still gate when there are raw markets so
+      // the SGM can use evidence-supported props as safer fillers; an empty prop pool never
+      // blocks the SGM, which also builds from the team markets.
+      if (candidatePool.length >= getMinimumCandidateLegsForSport(config, sport.key)) {
+        candidatePool = await filterCandidatePoolForResearch(sport, eventContext, candidatePool, researchCaches, overrides);
+      } else if (teamSgmEnabled) {
+        candidatePool = [];
+      } else {
+        continue;
+      }
+
+      // PRIMARY STRUCTURE: team same-game multi — h2h(favourite) + near-certain "max line"
+      // anchors + the SAFEST filler legs (evidence-supported player props preferred over the
+      // coin-flip total). Takes priority over player-prop-only multis. Builds for any genuine
+      // favourite even when no props clear the gate (falls back to the total filler).
+      if (teamSgmEnabled) {
+        try {
+          const supportedFillers = candidatePool.filter((candidate) =>
+            candidate.family === 'prop' && candidate.evidenceStatus === 'supported');
+          const sgmResult = buildTeamSgmDecision(eventContext, mergedQuotes, {
+            supportedFillers,
+            stakeUnits: eventContext.generatorConfig?.stakeUnits
+          });
+
+          if (sgmResult) {
+            const sgmPick = buildPickFromAnalysisDecision(eventContext, sgmResult.candidatePool, sgmResult.decision);
+
+            if (sgmPick) {
+              considered += 1;
+              generatedPicks.push(sgmPick);
+              continue;
+            }
+          }
+        } catch (error) {
+          console.log(`[analysis] team SGM skipped for ${eventContext.eventName}: ${error.message}`);
+        }
+      }
+
+      // Nothing cleared the evidence gate AND no SGM built — the hard-gate NO-BET.
+      if (!candidatePool.length) {
         continue;
       }
 
@@ -2658,7 +2741,9 @@ export async function runAnalysisJob(context, overrides = {}) {
 
       try {
         let decision;
-        const eventBankrollContext = bankrollContext;
+        const eventBankrollContext = String(sport?.key || '').toLowerCase() === 'mlb'
+          ? mlbBankrollContext
+          : bankrollContext;
 
         if (analyzeEvent) {
           decision = await analyzeEvent({

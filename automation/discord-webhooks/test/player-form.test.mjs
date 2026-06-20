@@ -30,8 +30,8 @@ test('player-form: stat key mapping', async (t) => {
   });
 
   await t.test('combo floor is used for multi-stat markets', () => {
-    assert.equal(getBufferFloor('nba', ['points', 'rebounds', 'assists']), 4);
-    assert.equal(getBufferFloor('afl', ['disposals']), 3);
+    assert.equal(getBufferFloor('nba', ['points', 'rebounds', 'assists']), 2);
+    assert.equal(getBufferFloor('afl', ['disposals']), 1);
   });
 });
 

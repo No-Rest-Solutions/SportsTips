@@ -397,8 +397,33 @@ async function runDaemon(context) {
           status: `running:${jobName}`
         });
 
-        await runNamedJob(jobName, context);
-        await saveState(context.config.__paths.stateFile, context.state);
+        // Isolate each job: a single job throwing must NEVER turn the whole daemon off.
+        // Log it, record it in runtime-status, and carry on to the next job / next cycle.
+        try {
+          await runNamedJob(jobName, context);
+          await saveState(context.config.__paths.stateFile, context.state);
+        } catch (jobError) {
+          const message = String(jobError?.stack || jobError?.message || jobError);
+          console.error(`[daemon] job "${jobName}" failed (continuing): ${message}`);
+          context.state.lastJobError = {
+            job: jobName,
+            message: String(jobError?.message || jobError),
+            at: new Date().toISOString()
+          };
+          try {
+            await saveState(context.config.__paths.stateFile, context.state);
+          } catch (saveError) {
+            console.error(`[daemon] could not persist state after job failure: ${saveError?.message || saveError}`);
+          }
+          try {
+            await writeRuntimeStatus(context.config, context.state, {
+              status: 'idle',
+              lastError: `job ${jobName}: ${String(jobError?.message || jobError)}`
+            });
+          } catch {
+            // best-effort status write; never let it crash the loop
+          }
+        }
       }
 
       await writeRuntimeStatus(context.config, context.state, {

@@ -9,6 +9,7 @@ import {
   appendPostedTrackerEntries,
   appendSettlementTrackerEntries,
   buildDailyTrackerSummary,
+  buildMlbLedgerConfig,
   readBankrollTrackerRows
 } from '../src/bot-tracker.mjs';
 import { runTrackerSummaryJob } from '../src/jobs/tracker-summary.mjs';
@@ -433,4 +434,41 @@ test('appendPostedTrackerEntries skips exact duplicate slips while keeping disti
   assert.equal(rows.filter((row) => row.transaction_type === 'post').length, 2);
   assert.equal(summary.openExposureUnits, 2);
   assert.equal(summary.lifetimePlacedUnits, 2);
+});
+
+test('runTrackerSummaryJob does not throw when the MLB ledger has activity but its webhook is unset (daemon-crash regression)', async (t) => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sportstips-tracker-mlb-unset-'));
+  t.after(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const config = buildConfig(workspaceRoot);
+  config.bankrollTracker.mlb = {
+    csvFile: path.join(workspaceRoot, 'automation', 'discord-webhooks', 'bot-bankroll-tracker-mlb.csv'),
+    startingBankrollUnits: 10,
+    unitSizeAud: 10,
+    settlementWebhook: 'mlbTracking',
+    summaryWebhook: 'mlbReport'
+  };
+  config.discord.webhooks.mlbTracking = '';
+  config.discord.webhooks.mlbReport = '';
+
+  // Give the MLB ledger an open position so its daily summary is non-null and the
+  // post path is reached.
+  const postedAt = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+  await appendPostedTrackerEntries(buildMlbLedgerConfig(config), [{
+    id: 'mlb-open-1',
+    sport: 'mlb',
+    sportLabel: 'MLB',
+    event: 'MLB Game',
+    startTime: postedAt,
+    summary: 'MLB Game Run Line',
+    stakeUnits: 1,
+    source: 'auto-generator'
+  }], postedAt);
+
+  // Real mode (dryRun:false) with an unset MLB report webhook must SKIP the post,
+  // not throw — an unhandled throw here exits the daemon ("turns off automatically").
+  const state = { jobs: {} };
+  await assert.doesNotReject(runTrackerSummaryJob({ config, state, dryRun: false }));
 });

@@ -2,7 +2,9 @@ import {
   appendPostedTrackerEntries,
   appendSettlementTrackerEntries,
   buildBankrollTrackerSnapshot,
+  buildMlbLedgerConfig,
   deriveLegOutcomeBreakdown,
+  isMlbLedgerPick,
   readBankrollTrackerRows
 } from '../bot-tracker.mjs';
 import { buildAutomatedMessage, sendWebhookMessage } from '../discord.mjs';
@@ -2079,7 +2081,9 @@ async function ensureTrackerRowsForPostedPendingPicks(context, feed, trackerRowM
   }
 
   for (const pick of missingPicks) {
-    await appendPostedTrackerEntries(config, [pick], state.posts?.picks?.[pick.id] || now.toISOString());
+    // Route MLB recovery rows to the MLB ledger so the main CSV stays MLB-free.
+    const ledgerConfig = isMlbLedgerPick(pick) ? buildMlbLedgerConfig(config) : config;
+    await appendPostedTrackerEntries(ledgerConfig, [pick], state.posts?.picks?.[pick.id] || now.toISOString());
 
     state.tracking ??= {};
     state.tracking.picks ??= {};
@@ -2089,7 +2093,10 @@ async function ensureTrackerRowsForPostedPendingPicks(context, feed, trackerRowM
     };
   }
 
-  const refreshedRows = await readBankrollTrackerRows(config, now.toISOString());
+  const refreshedRows = [
+    ...await readBankrollTrackerRows(config, now.toISOString()),
+    ...await readBankrollTrackerRows(buildMlbLedgerConfig(config), now.toISOString())
+  ];
   return buildTrackerRowMaps(refreshedRows);
 }
 
@@ -2175,12 +2182,68 @@ function compareSettledPicks(left, right) {
   return String(left?.id || '').localeCompare(String(right?.id || ''));
 }
 
+// Post one ledger's settled slips: append to that ledger's CSV, snapshot its bankroll,
+// and post to its settlement webhook. MLB runs through buildMlbLedgerConfig so its
+// rows + posts stay isolated from the main bankroll.
+async function postLedgerSettlements(context, ledgerConfig, ledgerSettled, dateKey, now) {
+  const { dryRun } = context;
+
+  if (!ledgerSettled.length) {
+    return;
+  }
+
+  const appendedTrackerRows = await appendSettlementTrackerEntries(ledgerConfig, ledgerSettled, now.toISOString());
+  const trackerRows = await readBankrollTrackerRows(ledgerConfig, now.toISOString());
+  const trackerSnapshot = await buildBankrollTrackerSnapshot(ledgerConfig, now);
+  const { latestByPickId, lastPostedByPickId } = buildTrackerRowMaps(trackerRows);
+  const appendedByPickId = new Map(appendedTrackerRows.map((row) => [row.pick_id, row]));
+  const enrichedSettled = ledgerSettled.map((pick) => enrichSettledPick(
+    pick,
+    appendedByPickId.get(pick.id) || latestByPickId.get(pick.id),
+    lastPostedByPickId.get(pick.id),
+    trackerSnapshot
+  ));
+  const messages = formatUnitTrackingMessages(enrichedSettled, dateKey);
+  const settlementWebhook = ledgerConfig.bankrollTracker?.settlementWebhook || 'unitTracking';
+  const settlementWebhookUrl = ledgerConfig.discord?.webhooks?.[settlementWebhook] || ledgerConfig.discord?.webhooks?.results;
+
+  for (const message of messages) {
+    const automatedMessage = buildAutomatedMessage(ledgerConfig, settlementWebhook, message);
+
+    // The ledger's webhook may be unconfigured (e.g. the MLB channel isn't set yet).
+    // The settlement is already recorded in the ledger CSV above, so skip the post
+    // rather than throwing — which would abort the job and re-settle next cycle.
+    if (!dryRun && !settlementWebhookUrl) {
+      continue;
+    }
+
+    await sendWebhookMessage(
+      settlementWebhookUrl,
+      {
+        content: automatedMessage.content,
+        embeds: automatedMessage.embeds,
+        username: ledgerConfig.discord.username,
+        avatar_url: ledgerConfig.discord.avatarUrl || undefined,
+        allowed_mentions: automatedMessage.allowedMentions
+      },
+      {
+        dryRun,
+        label: `${settlementWebhook} settlement`
+      }
+    );
+  }
+}
+
 export async function runResultsJob(context, overrides = {}) {
   const { config, state, dryRun } = context;
   const now = new Date();
   const dateKey = getDateKey(now, config.timezone);
   const feed = await loadRawPicksFeed(config.__paths.picksFeedFile);
-  const trackerRowsBefore = await readBankrollTrackerRows(config, now.toISOString());
+  // Read BOTH ledgers so MLB open positions are matched too (MLB lives in its own CSV).
+  const trackerRowsBefore = [
+    ...await readBankrollTrackerRows(config, now.toISOString()),
+    ...await readBankrollTrackerRows(buildMlbLedgerConfig(config), now.toISOString())
+  ];
   let trackerRowMapsBefore = buildTrackerRowMaps(trackerRowsBefore);
   hydratePostedPickStateFromTracker(state, trackerRowMapsBefore);
   trackerRowMapsBefore = await ensureTrackerRowsForPostedPendingPicks(context, feed, trackerRowMapsBefore, now);
@@ -2215,39 +2278,12 @@ export async function runResultsJob(context, overrides = {}) {
     };
   }
 
-  const appendedTrackerRows = await appendSettlementTrackerEntries(config, settled, now.toISOString());
-  const trackerRows = await readBankrollTrackerRows(config, now.toISOString());
-  const trackerSnapshot = await buildBankrollTrackerSnapshot(config, now);
-  const { latestByPickId, lastPostedByPickId } = buildTrackerRowMaps(trackerRows);
-  const appendedByPickId = new Map(appendedTrackerRows.map((row) => [row.pick_id, row]));
-  const enrichedSettled = settled.map((pick) => enrichSettledPick(
-    pick,
-    appendedByPickId.get(pick.id) || latestByPickId.get(pick.id),
-    lastPostedByPickId.get(pick.id),
-    trackerSnapshot
-  ));
-  const messages = formatUnitTrackingMessages(enrichedSettled, dateKey);
-  const settlementWebhook = config.bankrollTracker?.settlementWebhook || 'unitTracking';
-  const settlementWebhookUrl = config.discord?.webhooks?.[settlementWebhook] || config.discord?.webhooks?.results;
-
-  for (const message of messages) {
-    const automatedMessage = buildAutomatedMessage(config, settlementWebhook, message);
-
-    await sendWebhookMessage(
-      settlementWebhookUrl,
-      {
-        content: automatedMessage.content,
-        embeds: automatedMessage.embeds,
-        username: config.discord.username,
-        avatar_url: config.discord.avatarUrl || undefined,
-        allowed_mentions: automatedMessage.allowedMentions
-      },
-      {
-        dryRun,
-        label: 'unit tracking settlement'
-      }
-    );
-  }
+  // Settle each ledger separately: MLB through its isolated bankroll + channel, the
+  // rest through the main bankroll. The main CSV never sees an MLB row.
+  const mlbSettled = settled.filter((pick) => isMlbLedgerPick(pick));
+  const mainSettled = settled.filter((pick) => !isMlbLedgerPick(pick));
+  await postLedgerSettlements(context, config, mainSettled, dateKey, now);
+  await postLedgerSettlements(context, buildMlbLedgerConfig(config), mlbSettled, dateKey, now);
 
   await writeSettlementsToWorkspace(context, settled, feed);
 

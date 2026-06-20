@@ -3129,7 +3129,7 @@ test('runPicksJob rebuilds a malformed posted AFL slip from two clean disposal l
       fetchedAt: new Date().toISOString(),
       source: 'web-scrape',
       sourceUrl: 'https://example.test/afl-event',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.34 }]
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.45 }]
     }, {
       sportKey: 'afl',
       homeTeam: 'Richmond',
@@ -3143,7 +3143,7 @@ test('runPicksJob rebuilds a malformed posted AFL slip from two clean disposal l
       fetchedAt: new Date().toISOString(),
       source: 'web-scrape',
       sourceUrl: 'https://example.test/afl-event',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.31 }]
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.42 }]
     }]
   };
 
@@ -3290,7 +3290,7 @@ test('runPicksJob rebuilds a posted AFL slip when it uses off-step disposal ladd
       fetchedAt: new Date().toISOString(),
       source: 'web-scrape',
       sourceUrl: 'https://example.test/afl-event',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.35 }]
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.46 }]
     }, {
       sportKey: 'afl',
       homeTeam: 'North Melbourne',
@@ -3304,7 +3304,7 @@ test('runPicksJob rebuilds a posted AFL slip when it uses off-step disposal ladd
       fetchedAt: new Date().toISOString(),
       source: 'web-scrape',
       sourceUrl: 'https://example.test/afl-event',
-      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.33 }]
+      prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.42 }]
     }]
   };
 
@@ -3421,7 +3421,7 @@ test('buildFreshSnapshotReplacementOptions reuses AFL research filtering and att
         fetchedAt: new Date().toISOString(),
         source: 'web-scrape',
         sourceUrl: 'https://example.test/afl-event',
-        prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.36 }]
+        prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.55 }]
       }, {
         sportKey: 'afl',
         homeTeam: 'West Coast Eagles',
@@ -3435,7 +3435,7 @@ test('buildFreshSnapshotReplacementOptions reuses AFL research filtering and att
         fetchedAt: new Date().toISOString(),
         source: 'web-scrape',
         sourceUrl: 'https://example.test/afl-event',
-        prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.24 }]
+        prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price: 1.42 }]
       }]
     },
     fetchEspnSlate: async () => ({

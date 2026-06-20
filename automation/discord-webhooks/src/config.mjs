@@ -178,6 +178,8 @@ export async function loadConfig(configPathArg) {
       results: rawWebhooks.results || '',
       unitTracking: rawWebhooks.unitTracking || rawWebhooks.results || '',
       unitReport: rawWebhooks.unitReport || '',
+      mlbTracking: rawWebhooks.mlbTracking || '',
+      mlbReport: rawWebhooks.mlbReport || '',
       promoAfl: rawWebhooks.promoAfl || '',
       promoNrl: rawWebhooks.promoNrl || '',
       promoTennis: rawWebhooks.promoTennis || '',
@@ -338,7 +340,18 @@ export async function loadConfig(configPathArg) {
     summaryWebhook: summaryWebhook === 'results' ? 'unitReport' : summaryWebhook,
     rollingWindowDays: numberOrFallback(config.bankrollTracker?.rollingWindowDays, 30),
     repeatLossThreshold: numberOrFallback(config.bankrollTracker?.repeatLossThreshold, 2),
-    losingLegsReportFile: resolveWorkspacePath(config.bankrollTracker?.losingLegsReportFile || 'automation/discord-webhooks/bot-losing-legs-report.md')
+    losingLegsReportFile: resolveWorkspacePath(config.bankrollTracker?.losingLegsReportFile || 'automation/discord-webhooks/bot-losing-legs-report.md'),
+    // Separate, isolated ledger for MLB so its (hardest-to-beat, low-volume) results
+    // never touch the main bankroll. Its own CSV, starting units and webhooks.
+    mlb: {
+      enabled: config.bankrollTracker?.mlb?.enabled !== false,
+      csvFile: resolveWorkspacePath(config.bankrollTracker?.mlb?.csvFile || 'automation/discord-webhooks/bot-bankroll-tracker-mlb.csv'),
+      startingBankrollUnits: numberOrFallback(config.bankrollTracker?.mlb?.startingBankrollUnits, 10),
+      unitSizeAud: numberOrFallback(config.bankrollTracker?.mlb?.unitSizeAud ?? config.bankrollTracker?.unitSizeAud, 10),
+      settlementWebhook: config.bankrollTracker?.mlb?.settlementWebhook || 'mlbTracking',
+      summaryWebhook: config.bankrollTracker?.mlb?.summaryWebhook || 'mlbReport',
+      losingLegsReportFile: resolveWorkspacePath(config.bankrollTracker?.mlb?.losingLegsReportFile || 'automation/discord-webhooks/bot-losing-legs-report-mlb.md')
+    }
   };
 
   config.analysis = {

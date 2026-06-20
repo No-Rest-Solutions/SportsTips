@@ -46,6 +46,10 @@ const PROFIT_TRACKER = `# 30-Day Profit Tracker
 | Start Date | ${ddmmyyyy} |
 | Days Logged | 0 / 30 |
 
+## Pending Bet Notes
+
+_No pending bets._
+
 ## Settled Bet Log
 
 | Date | Sport | Event | Bet Type | Stake (u) | Result | P/L (u) | Notes |
@@ -76,6 +80,11 @@ async function main() {
   // Delete (don't empty) the evidence log so its header re-writes on the next post.
   await fs.rm(path.join(here, 'bot-evidence-log.csv'), { force: true });
   console.log('  reset evidence log: bot-evidence-log.csv (removed; recreated on next post)');
+  // Delete the isolated MLB ledger + its report so they re-init at the MLB starting
+  // bankroll on the next MLB pick.
+  await fs.rm(path.join(here, 'bot-bankroll-tracker-mlb.csv'), { force: true });
+  await fs.rm(path.join(here, 'bot-losing-legs-report-mlb.md'), { force: true });
+  console.log('  reset MLB ledger: bot-bankroll-tracker-mlb.csv + bot-losing-legs-report-mlb.md (removed; re-init on next MLB pick)');
   await writeFile(path.join(here, 'bot-losing-legs-report.md'), LOSING_LEGS, 'losing-legs report');
   await writeFile(path.join(workspaceRoot, '30-day-profit-tracker.md'), PROFIT_TRACKER, 'profit tracker');
   console.log('Done. Webhook URLs were left intact. Launch the new build to start the fresh trial.');

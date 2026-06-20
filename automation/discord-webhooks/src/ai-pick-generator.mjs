@@ -22,13 +22,10 @@ const MLB_SAFE_HIT_PRICE_MAX = 1.55;
 // Tightened from 5.5: quality starters in 5-6 innings average 4-5 Ks; 5.5+ is a stretch line.
 const MLB_SAFE_STRIKEOUT_LINE_MAX = 4.5;
 const MLB_SAFE_STRIKEOUT_PRICE_MAX = 1.75;
-// Featured-single profile (v3) thresholds.
-// Moneyline favourite: price ≤1.65 ⇒ implied ≥60%, i.e. only genuine favourites.
-const MLB_SAFE_ML_PRICE_MAX = 1.65;
-// Protected +1.5 run line (team gets +1.5 runs): floor avoids juiced near-certainties
-// that add no value, ceiling keeps it to a real protected line, not a disguised favourite -1.5.
-const MLB_PROTECTED_RUNLINE_PRICE_MIN = 1.45;
-const MLB_PROTECTED_RUNLINE_PRICE_MAX = 2.05;
+// Featured-single profile (v4): an evidence-supported moneyline OR run line, priced at
+// or above a value floor — no ultra-short favourites. Quality is enforced by the
+// deep-analysis evidence gate; this just keeps every MLB leg to even-money-or-better.
+const MLB_MIN_LEG_PRICE = 1.91;
 
 function normalizeText(value) {
   return String(value || '')
@@ -350,6 +347,12 @@ function roundMetric(value) {
 
 const SAFE_GENERATED_TOTAL_ODDS_TARGET_MAX = 3.25;
 const SAFE_GENERATED_TOTAL_ODDS_HARD_MAX = 5;
+// Value floors: every posted slip must pay at least 2x (a treble of near-locks at 1.48
+// is not worth the stake), and no single leg may be shorter than 1.15 (no 1.08 locks).
+// MLB is EXEMPT from the 2x slip floor — it runs single featured legs at its own
+// >=1.91 value floor (MLB_MIN_LEG_PRICE), since baseball is too volatile to parlay.
+const MIN_GENERATED_TOTAL_ODDS = 2.0;
+const MIN_LEG_PRICE = 1.15;
 // NRL anchor legs (protected plus lines, safe totals) price ~1.8-1.9, so even
 // the safest 3-leg line+line+kicker mix lands ~3.3-4.6x. Without this ceiling
 // the generic 3.25x target makes every NRL 3-leg build unreachable.
@@ -725,34 +728,23 @@ function getMlbRunLinePoint(candidate) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function isMlbFavouriteMoneyline(candidate) {
-  if (normalizeText(candidate?.market) !== 'h2h') {
-    return false;
-  }
-
-  const bestPrice = toNumber(candidate?.bestPrice);
-  // Price ≤1.65 ⇒ implied ≥60.6%: only genuine favourites, never coin-flip/underdog moneylines.
-  return bestPrice !== null && bestPrice > 1 && bestPrice <= MLB_SAFE_ML_PRICE_MAX;
-}
-
-function isMlbProtectedRunLineSingle(candidate) {
-  const point = getMlbRunLinePoint(candidate);
-  const bestPrice = toNumber(candidate?.bestPrice);
-
-  // Only the team GETTING +1.5 runs (point > 0) — never the -1.5 favourite needing to win by 2+.
-  return point !== null
-    && point > 0
-    && bestPrice !== null
-    && bestPrice >= MLB_PROTECTED_RUNLINE_PRICE_MIN
-    && bestPrice <= MLB_PROTECTED_RUNLINE_PRICE_MAX;
-}
-
-function isAllowedMlbFeaturedSingle(candidate) {
+function isAllowedMlbFeaturedSingle(candidate, minLegPrice = MLB_MIN_LEG_PRICE) {
   if (!candidate) {
     return false;
   }
 
-  return isMlbFavouriteMoneyline(candidate) || isMlbProtectedRunLineSingle(candidate);
+  // Featured markets only: moneyline (h2h) or run line (spreads). Player props post
+  // late and stay out of the default profile.
+  const market = normalizeText(candidate?.market);
+  if (market !== 'h2h' && market !== 'spreads') {
+    return false;
+  }
+
+  // Value floor: every MLB leg must be priced at or above the minimum (even-money-or-
+  // better), so no ultra-short favourites. The deep-analysis evidence gate decides
+  // whether the side is actually supported.
+  const bestPrice = toNumber(candidate?.bestPrice);
+  return bestPrice !== null && bestPrice >= minLegPrice;
 }
 
 function isAllowedMlbCandidate(candidate) {
@@ -2009,6 +2001,14 @@ function evaluateRulesCandidateCombo(context, eventContext, candidates, indexByC
   let requiresFallbackOdds = false;
 
   if (observedComboOdds !== null) {
+    // Hard minimum slip price: reject anything paying under 2x (a 1.48 treble of
+    // near-locks is no value). MLB is exempt — it runs single legs at its own >=1.91
+    // value floor.
+    const minTotalOdds = isSport(eventContext, 'mlb') ? MLB_MIN_LEG_PRICE : MIN_GENERATED_TOTAL_ODDS;
+    if (observedComboOdds < minTotalOdds) {
+      return null;
+    }
+
     if (isSport(eventContext, 'afl') && observedComboOdds > SAFE_GENERATED_TOTAL_ODDS_TARGET_MAX && !allowsSportFallbackOdds) {
       return null;
     }
@@ -2312,10 +2312,13 @@ function getLegRange(eventContextOrSportKey) {
   const normalizedSportKey = String(sportKey || '').toLowerCase();
 
   if (normalizedSportKey === 'afl') {
-    return { min: 2, max: 3, preferred: 3 };
+    // Allow up to 5 legs so the builder can stack enough evidence-supported legs to
+    // clear the 2x minimum slip price (3 safe ~1.2 legs only reach ~1.7).
+    return { min: 2, max: 5, preferred: 3 };
   }
 
   if (normalizedSportKey === 'nrl') {
+    // NRL's protected 3-leg build already lands ~3.3-4.6x, comfortably above 2x.
     return { min: 2, max: 3, preferred: 3 };
   }
 
@@ -2325,14 +2328,15 @@ function getLegRange(eventContextOrSportKey) {
   }
 
   if (normalizedSportKey.startsWith('soccer')) {
-    return { min: 2, max: 3, preferred: 2 };
+    return { min: 2, max: 4, preferred: 2 };
   }
 
   if (normalizedSportKey.startsWith('tennis')) {
     return { min: 1, max: 1, preferred: 1 };
   }
 
-  return { min: 2, max: 3, preferred: 2 };
+  // NBA / NHL / NFL and any other multi sport: allow up to 5 legs to reach the 2x floor.
+  return { min: 2, max: 5, preferred: 3 };
 }
 
 function isHardLockedSameGameMultiSport(eventContext) {
@@ -2457,7 +2461,7 @@ export function buildAnalysisCandidatePool(eventContext, quotes, maxCandidates) 
         ? Math.max(candidateLimit * 3, 36)
         : candidateLimit;
 
-  return capCandidatePoolForSport(
+  const pool = capCandidatePoolForSport(
     eventContext,
     filterCandidatePoolForSport(
       eventContext,
@@ -2465,6 +2469,14 @@ export function buildAnalysisCandidatePool(eventContext, quotes, maxCandidates) 
     ),
     candidateLimit
   );
+
+  // Per-leg value floor: drop any leg priced under MIN_LEG_PRICE (e.g. 1.08 near-locks)
+  // so they can never enter a combo. MLB featured legs already sit >=1.91, so this only
+  // trims ultra-short props on the multi sports.
+  return pool.filter((candidate) => {
+    const price = toNumber(candidate?.bestPrice);
+    return price !== null && price >= MIN_LEG_PRICE;
+  });
 }
 
 export function decisionPassesChecklist(decision, eventContext) {
@@ -2824,6 +2836,7 @@ export function buildPickFromAnalysisDecision(eventContext, candidatePool, decis
     stakeUnits: normalizeStakeUnits(decision.stakeUnits || eventContext.generatorConfig.stakeUnits || 1),
     source: generatedSource,
     analysisEngine,
+    ...(decision.teamSgm ? { teamSgm: true } : {}),
     ...(isSport(eventContext, 'mlb') ? { mlbStructureProfile: getMlbStructureProfile(eventContext) } : {}),
     legs: legObjects,
     tabAvailability: getComboTabAvailability(selectedLegs.map((item) => item.candidate), tabMarkets),

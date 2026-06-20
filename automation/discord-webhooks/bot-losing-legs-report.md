@@ -1,3 +1,10 @@
 # Bot Losing Legs Report
 
-_Reset 2026-06-15 for the fresh 30-day trial. Repeat losing legs (>= 2 losses) are logged here automatically as results settle._
+Rolling window: last 30 days.
+Repeat-miss threshold: 2.
+
+No recurring losing legs have crossed the report threshold yet.
+
+## Recent Missed Legs
+
+- Gold Coast SUNS vs Hawthorn | Cam Mackenzie 20+ Disposals

@@ -1,4 +1,4 @@
-import { buildDailyTrackerSummary } from '../bot-tracker.mjs';
+import { buildDailyTrackerSummary, buildMlbLedgerConfig } from '../bot-tracker.mjs';
 import { buildAutomatedMessage, sendWebhookMessage } from '../discord.mjs';
 import { getDateKey } from '../scheduler.mjs';
 
@@ -96,11 +96,52 @@ function buildSummaryMessage(summary) {
   };
 }
 
+async function postLedgerSummary(ledgerConfig, now, dryRun, label) {
+  const summary = await buildDailyTrackerSummary(ledgerConfig, now);
+
+  if (!summary) {
+    return null;
+  }
+
+  const webhookChannel = ledgerConfig.bankrollTracker?.summaryWebhook || 'unitReport';
+  const webhookUrl = ledgerConfig.discord?.webhooks?.[webhookChannel] || ledgerConfig.discord?.webhooks?.results;
+
+  // The ledger's summary webhook may be unconfigured (e.g. the MLB report channel
+  // isn't set yet). Skip the post rather than throwing — an unhandled throw here
+  // aborts the daemon's job run (the "turns off automatically" crash).
+  if (!dryRun && !webhookUrl) {
+    return null;
+  }
+
+  const automatedMessage = buildAutomatedMessage(ledgerConfig, webhookChannel, buildSummaryMessage(summary));
+
+  await sendWebhookMessage(
+    webhookUrl,
+    {
+      content: automatedMessage.content,
+      embeds: automatedMessage.embeds,
+      username: ledgerConfig.discord.username,
+      avatar_url: ledgerConfig.discord.avatarUrl || undefined,
+      allowed_mentions: automatedMessage.allowedMentions
+    },
+    {
+      dryRun,
+      label
+    }
+  );
+
+  return summary;
+}
+
 export async function runTrackerSummaryJob(context) {
   const { config, state, dryRun } = context;
   const now = new Date();
   const dateKey = getDateKey(now, config.timezone);
-  const summary = await buildDailyTrackerSummary(config, now);
+
+  // Main bankroll summary, then the isolated MLB ledger summary (only posts once the
+  // MLB ledger has activity).
+  const summary = await postLedgerSummary(config, now, dryRun, 'daily tracker summary');
+  const mlbSummary = await postLedgerSummary(buildMlbLedgerConfig(config), now, dryRun, 'daily MLB tracker summary');
 
   state.jobs.trackerSummary = {
     lastRunDate: dateKey,
@@ -108,34 +149,8 @@ export async function runTrackerSummaryJob(context) {
     sourceDateKey: summary?.summaryDateKey || null
   };
 
-  if (!summary) {
-    return {
-      job: 'trackerSummary',
-      posted: 0
-    };
-  }
-
-  const webhookChannel = config.bankrollTracker?.summaryWebhook || 'unitReport';
-  const webhookUrl = config.discord?.webhooks?.[webhookChannel] || config.discord?.webhooks?.results;
-  const automatedMessage = buildAutomatedMessage(config, webhookChannel, buildSummaryMessage(summary));
-
-  await sendWebhookMessage(
-    webhookUrl,
-    {
-      content: automatedMessage.content,
-      embeds: automatedMessage.embeds,
-      username: config.discord.username,
-      avatar_url: config.discord.avatarUrl || undefined,
-      allowed_mentions: automatedMessage.allowedMentions
-    },
-    {
-      dryRun,
-      label: 'daily tracker summary'
-    }
-  );
-
   return {
     job: 'trackerSummary',
-    posted: 1
+    posted: (summary ? 1 : 0) + (mlbSummary ? 1 : 0)
   };
 }

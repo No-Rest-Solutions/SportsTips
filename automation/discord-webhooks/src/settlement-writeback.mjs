@@ -272,12 +272,24 @@ function replaceMetricLabel(content, currentLabel, nextLabel) {
 function replaceSectionBody(content, heading, nextHeading, nextBody) {
   const pattern = new RegExp(`(## ${escapeRegex(heading)}\\r?\\n\\r?\\n)([\\s\\S]*?)(?=\\r?\\n## ${escapeRegex(nextHeading)}\\r?\\n|$)`);
 
-  if (!pattern.test(content)) {
-    throw new Error(`Missing section: ${heading}`);
+  if (pattern.test(content)) {
+    return content.replace(pattern, (_, prefix) => `${prefix}${nextBody.trimEnd()}\n`);
   }
 
-  return content.replace(pattern, (_, prefix) => `${prefix}${nextBody.trimEnd()}\n`);
+  // Section missing (e.g. a reset/older template that doesn't include it). SELF-HEAL by
+  // inserting it rather than throwing — an unhandled throw here used to crash the daemon.
+  // Prefer inserting just before the next heading; otherwise append at the end.
+  const section = `## ${heading}\n\n${nextBody.trimEnd()}\n`;
+  const nextHeadingPattern = new RegExp(`\\r?\\n## ${escapeRegex(nextHeading)}\\r?\\n`);
+
+  if (nextHeadingPattern.test(content)) {
+    return content.replace(nextHeadingPattern, (match) => `\n\n${section}${match}`);
+  }
+
+  return `${content.trimEnd()}\n\n${section}`;
 }
+
+export const __testables = { replaceSectionBody };
 
 function appendRowsToTableSection(content, heading, nextHeading, rows) {
   return replaceSectionBody(content, heading, nextHeading, (() => {

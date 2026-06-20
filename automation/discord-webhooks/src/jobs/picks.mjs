@@ -7,6 +7,8 @@ import {
   appendCancellationTrackerEntries,
   appendPostedTrackerEntries,
   appendReplacementTrackerEntries,
+  buildMlbLedgerConfig,
+  isMlbLedgerPick,
   readBankrollTrackerRows
 } from '../bot-tracker.mjs';
 import { evaluatePickAgainstBenchmarks } from '../benchmarks.mjs';
@@ -497,7 +499,10 @@ function ensurePickTracking(state) {
 }
 
 export const __testables = {
-  buildFreshSnapshotReplacementOptions
+  buildFreshSnapshotReplacementOptions,
+  validateLegPublication,
+  validateGeneratedTotalOddsProfile,
+  validateLivePricing
 };
 
 function getStartTimeMs(pick) {
@@ -1787,6 +1792,22 @@ function validateGeneratedTotalOddsProfile(pick, totalOdds) {
     return [];
   }
 
+  // The team SGM (h2h + near-certain "max line" + total, same team) is its own approved
+  // primary structure across AFL/NRL/NBA/NHL/NFL. It intentionally mixes h2h/line/total
+  // and carries a deliberately near-free anchor leg, so the per-sport disposal/line
+  // profiles below do not apply — just hold it to the 2x floor with a sane ceiling.
+  if (pick?.teamSgm) {
+    if (numericTotalOdds < 2.0) {
+      return [`team SGM total odds x${numericTotalOdds.toFixed(2)} fall below the 2.0 minimum`];
+    }
+
+    if (numericTotalOdds > 5.0) {
+      return [`team SGM total odds x${numericTotalOdds.toFixed(2)} exceed the 5.0 sanity ceiling`];
+    }
+
+    return [];
+  }
+
   if (sportKey === 'afl') {
     if (legProfile.legCount < 2 || legProfile.legCount > 3 || legProfile.totalCount > 0 || legProfile.h2hCount > 0 || legProfile.spreadCount > 0 || legProfile.aflDisposalsCount < 2 || legProfile.aflGoalCount > 1) {
       return ['generated AFL slips must stay in the safer 2-3 leg disposal-led structure with no totals, H2H, or line fillers'];
@@ -1868,6 +1889,27 @@ async function validateLivePricing(context, pick, overrides = {}) {
   const resolveValidation = overrides.resolveOddsValidation || resolveOddsValidation;
 
   for (const leg of legs) {
+    // The team-SGM "max line" anchor is a modelled near-certain handicap (e.g. a +35.5
+    // Pick-Your-Own-Line) that Sportsbet generates inside its SGM builder, so it is not
+    // in the featured-market snapshot. Treat it as a locked, always-available leg at its
+    // modelled price rather than failing it as "unavailable".
+    if (normalizeText(leg?.source?.type) === 'model') {
+      const modelledOdds = toNumber(leg?.odds);
+
+      if (modelledOdds !== null && modelledOdds > 0) {
+        checkedLegCount += 1;
+        matchedLegPrices.push({
+          legId: String(leg?.id || ''),
+          label: String(leg?.label || '').trim(),
+          bestOdds: modelledOdds,
+          bestBookmaker: 'sportsbet-web',
+          source: 'model'
+        });
+      }
+
+      continue;
+    }
+
     const oddsCheck = buildLegOddsCheck(pick, leg, context.config);
 
     if (!oddsCheck) {
@@ -2566,9 +2608,29 @@ export async function runPicksJob(context, overrides = {}) {
   }
 
   if (!dryRun) {
-    await appendPostedTrackerEntries(config, approved, now.toISOString());
-    await appendReplacementTrackerEntries(config, sentReplacements, now.toISOString());
-    const appendedCancellationRows = await appendCancellationTrackerEntries(config, sentCancellations, now.toISOString());
+    // Route MLB tracker rows to its isolated ledger; everything else stays on the main
+    // bankroll. The main CSV never receives an MLB row.
+    const mlbConfig = buildMlbLedgerConfig(config);
+    const splitByLedger = (items, getPick) => {
+      const mlb = [];
+      const main = [];
+      for (const item of items) {
+        (isMlbLedgerPick(getPick(item)) ? mlb : main).push(item);
+      }
+      return { mlb, main };
+    };
+    const approvedSplit = splitByLedger(approved, (pick) => pick);
+    const replacementsSplit = splitByLedger(sentReplacements, (item) => item?.replacement || item?.original || item);
+    const cancellationsSplit = splitByLedger(sentCancellations, (item) => item);
+
+    await appendPostedTrackerEntries(config, approvedSplit.main, now.toISOString());
+    await appendPostedTrackerEntries(mlbConfig, approvedSplit.mlb, now.toISOString());
+    await appendReplacementTrackerEntries(config, replacementsSplit.main, now.toISOString());
+    await appendReplacementTrackerEntries(mlbConfig, replacementsSplit.mlb, now.toISOString());
+    const appendedCancellationRows = [
+      ...await appendCancellationTrackerEntries(config, cancellationsSplit.main, now.toISOString()),
+      ...await appendCancellationTrackerEntries(mlbConfig, cancellationsSplit.mlb, now.toISOString())
+    ];
 
     await sendCancellationSettlementMessages(config, sentCancellations, appendedCancellationRows, dateKey, dryRun);
 

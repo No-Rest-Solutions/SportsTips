@@ -1,0 +1,2 @@
+timestamp,transaction_key,transaction_type,pick_id,sport,event,start_time,slip,price_decimal,stake_units,stake_aud,bankroll_delta_units,return_units,return_aud,net_units,net_aud,units_remaining,units_remaining_aud,total_settled_stake_units,total_settled_stake_aud,status,legs_hit,legs_missed,specific_leg_lost,source,notes
+2026-06-17T05:48:34.643Z,init,init,,,,,,,,,0.00,,,,,10.00,100.00,0.00,0.00,tracker_started,,,,system,Tracker started at 10.00u ($100.00 AUD).

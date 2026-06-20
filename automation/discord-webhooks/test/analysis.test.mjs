@@ -2648,10 +2648,13 @@ test('buildAnalysisCandidatePool keeps deeper AFL-safe disposal legs after filte
 
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
 
-  assert.ok(candidatePool.length >= 8);
+  // The 6 deeper-safe legs are priced >=1.28 (kept); the front-loaded 10-17 rungs sit
+  // at 1.03-1.13 and are now dropped by the >=1.15 per-leg value floor.
+  assert.ok(candidatePool.length >= 6);
   assert.ok(candidatePool.some((candidate) => candidate.label === 'James Rowbottom 15+ Disposals'));
   assert.ok(candidatePool.some((candidate) => candidate.label === 'Nick Vlastuin 15+ Disposals'));
   assert.ok(candidatePool.every((candidate) => !/\b(11|12|13|14|16|17)\+ Disposals\b/.test(candidate.label)));
+  assert.ok(candidatePool.every((candidate) => Number(candidate.bestPrice) >= 1.15));
 });
 
 test('buildAnalysisCandidatePool keeps supported AFL 20+ and 25+ disposal ladders ahead of low-rung filler', () => {
@@ -2764,14 +2767,15 @@ test('buildAnalysisCandidatePool (v3) keeps the MLB favourite moneyline and +1.5
 
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
 
-  // Favourite moneyline (≤1.65) kept; underdog moneyline (2.45) dropped.
+  // v4: keep moneyline/run-line legs priced >= 1.91, drop anything shorter.
   const isH2h = (c) => String(c.market).toLowerCase() === 'h2h';
-  assert.ok(candidatePool.some((c) => isH2h(c) && /Tampa Bay Rays/.test(c.label)));
-  assert.equal(candidatePool.some((c) => isH2h(c) && /Los Angeles Angels/.test(c.label)), false);
-  // Protected +1.5 run line kept; the -1.5 favourite line dropped.
-  assert.ok(candidatePool.some((c) => Number(c.point) === 1.5));
-  assert.equal(candidatePool.some((c) => Number(c.point) === -1.5), false);
-  // Props and totals are not part of the v3 featured-single pool.
+  // Underdog moneyline (2.45) kept; short favourite moneyline (1.55) dropped.
+  assert.ok(candidatePool.some((c) => isH2h(c) && /Los Angeles Angels/.test(c.label)));
+  assert.equal(candidatePool.some((c) => isH2h(c) && /Tampa Bay Rays/.test(c.label)), false);
+  // Favourite -1.5 run line (2.5) kept; the short +1.5 line (1.52) dropped.
+  assert.ok(candidatePool.some((c) => Number(c.point) === -1.5));
+  assert.equal(candidatePool.some((c) => Number(c.point) === 1.5), false);
+  // Props and totals are not part of the featured-single pool.
   assert.equal(candidatePool.some((c) => c.family === 'prop'), false);
   assert.equal(candidatePool.some((c) => c.family === 'total'), false);
 });
@@ -3479,7 +3483,7 @@ test('analyzeEventWithRules keeps legacy MLB rebuilds on the old hit-led structu
   assert.match(decision.noBetReason, /at least two clean hit props/i);
 });
 
-test('analyzeEventWithRules (v3) posts a single MLB favourite-moneyline leg and ignores props/totals', async () => {
+test('buildAnalysisCandidatePool (v4) keeps the MLB value moneyline and drops the short favourite + props/totals', () => {
   const startTime = '2026-05-23T19:05:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3515,29 +3519,16 @@ test('analyzeEventWithRules (v3) posts a single MLB favourite-moneyline leg and 
     { ...base, market: 'batter_hits', outcomeName: '1+ Hit', description: 'Jose Ramirez', point: null, prices: px(1.44) }
   ];
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
-  const context = {
-    config: {
-      benchmarkFilters: {
-        requireSupportData: false,
-        significantSupportScore: 5,
-        strongSupportScore: 8
-      }
-    }
-  };
 
-  const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
-  const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
-
-  assert.equal(decision.qualifies, true);
-  assert.equal(decision.recommendation, 'build_single');
-  assert.ok(pick);
-  assert.equal(pick.mlbStructureProfile, 'mlb-featured-single-v3');
-  assert.equal(pick.legs.length, 1);
-  assert.match(pick.legs[0].label, /Cleveland Guardians/);
-  assert.ok(pick.legs.every((leg) => leg.source?.family !== 'prop' && leg.source?.family !== 'total'));
+  // v4: the short favourite moneyline (1.58) is dropped; the value side (Phillies 2.4) is kept.
+  const isH2h = (c) => String(c.market).toLowerCase() === 'h2h';
+  assert.ok(candidatePool.some((c) => isH2h(c) && /Philadelphia Phillies/.test(c.label)));
+  assert.equal(candidatePool.some((c) => isH2h(c) && /Cleveland Guardians/.test(c.label)), false);
+  assert.equal(candidatePool.some((c) => c.family === 'prop'), false);
+  assert.equal(candidatePool.some((c) => c.family === 'total'), false);
 });
 
-test('analyzeEventWithRules (v3) posts a single MLB +1.5 run line when no moneyline favourite qualifies', async () => {
+test('buildAnalysisCandidatePool (v4) keeps a favourite -1.5 run line at/above the floor and drops the short +1.5', () => {
   const startTime = '2026-05-23T20:10:00.000Z';
   const fetchedAt = new Date().toISOString();
   const eventContext = {
@@ -3575,26 +3566,14 @@ test('analyzeEventWithRules (v3) posts a single MLB +1.5 run line when no moneyl
     { ...base, market: 'batter_hits', outcomeName: '1+ Hit', description: 'Mookie Betts', point: null, prices: px(1.44) }
   ];
   const candidatePool = buildAnalysisCandidatePool(eventContext, quotes, 14);
-  const context = {
-    config: {
-      benchmarkFilters: {
-        requireSupportData: false,
-        significantSupportScore: 5,
-        strongSupportScore: 8
-      }
-    }
-  };
 
-  const decision = await analyzeEventWithRules(context, eventContext, candidatePool, { availableUnits: 10 });
-  const pick = buildPickFromAnalysisDecision(eventContext, candidatePool, decision);
-
-  assert.equal(decision.qualifies, true);
-  assert.equal(decision.recommendation, 'build_single');
-  assert.ok(pick);
-  assert.equal(pick.mlbStructureProfile, 'mlb-featured-single-v3');
-  assert.equal(pick.legs.length, 1);
-  assert.match(pick.legs[0].label, /Los Angeles Dodgers \+1\.5/);
-  assert.ok(pick.legs.every((leg) => leg.source?.family !== 'prop' && leg.source?.family !== 'total'));
+  // v4: the favourite -1.5 run line (2.7) is kept; the short +1.5 (1.5) and short
+  // favourite moneyline (1.8) are dropped; the value-side moneyline (2.05) is kept.
+  const isH2h = (c) => String(c.market).toLowerCase() === 'h2h';
+  assert.ok(candidatePool.some((c) => Number(c.point) === -1.5 && /New York Mets/.test(c.label)));
+  assert.equal(candidatePool.some((c) => Number(c.point) === 1.5), false);
+  assert.equal(candidatePool.some((c) => isH2h(c) && /New York Mets/.test(c.label)), false);
+  assert.ok(candidatePool.some((c) => isH2h(c) && /Los Angeles Dodgers/.test(c.label)));
 });
 
 test('analyzeEventWithRules (v3) skips MLB hit-plus-strikeout prop boards with no featured single', async () => {

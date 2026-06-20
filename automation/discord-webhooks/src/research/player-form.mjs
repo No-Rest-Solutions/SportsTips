@@ -20,19 +20,23 @@ export const PROP_EVIDENCE_STATUS = {
   UNKNOWN: 'unknown'
 };
 
-// Minimum finalised games before a prop can be graded "supported".
-const DEFAULT_MIN_GAMES = 4;
+// Minimum finalised games before a prop can be graded "supported". AFL/NRL run weekly with
+// bye rounds + rotation, so even a regular only shows ~3 games in the recent window — 4 was
+// throwing out most of the board. The hit-rate + buffer still guard quality.
+const DEFAULT_MIN_GAMES = 3;
 // Share of recent games the player must have cleared the line.
 const DEFAULT_MIN_HIT_RATE = 0.6;
 
-// Safe buffer (average minus line) required per sport+stat, so we lean on
-// comfortable rungs rather than coin-flip lines.
+// Safe buffer (average minus line) required per sport+stat — enough that the player clears
+// the line comfortably rather than sitting right on it, WITHOUT demanding they smash it.
+// (The old AFL disposals floor of 3 meant an 80%-hit-rate 15+ player who averaged 16.4 was
+// rejected as "weak" — selection should lean on the hit-rate, with the buffer as a guard.)
 const BUFFER_FLOOR = {
-  afl: { disposals: 3, goals: 1 },
-  nrl: { points: 2, tries: 0.5 },
-  nba: { points: 3, rebounds: 1.5, assists: 1.5, threesMade: 0.5, combo: 4 },
-  mlb: { hits: 0.4, strikeouts: 1 },
-  nfl: { passingYards: 20, rushingYards: 12 }
+  afl: { disposals: 1, goals: 0.5 },
+  nrl: { points: 1, tries: 0.5 },
+  nba: { points: 1.5, rebounds: 1, assists: 1, threesMade: 0.5, combo: 2 },
+  mlb: { hits: 0.3, strikeouts: 0.75 },
+  nfl: { passingYards: 12, rushingYards: 8 }
 };
 
 /**

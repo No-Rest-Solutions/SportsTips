@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { appendPostedTrackerEntries } from '../src/bot-tracker.mjs';
+import { appendPostedTrackerEntries, buildMlbLedgerConfig } from '../src/bot-tracker.mjs';
 import { formatUnitTrackingMessages } from '../src/formatters.mjs';
 import { runResultsJob } from '../src/jobs/results.mjs';
 import { extractEspnPlayerBoxscoreStats, fetchEspnSummary } from '../src/providers/espn.mjs';
@@ -388,9 +388,9 @@ test('runResultsJob appends settlement ledger rows in settled order even when th
     picks: [{
       id: 'pick-late',
       status: 'loss',
-      sport: 'mlb',
-      sportLabel: 'MLB',
-      league: 'MLB',
+      sport: 'nba',
+      sportLabel: 'NBA',
+      league: 'NBA',
       event: 'Late Game',
       summary: 'Late Game Under 8.5',
       betType: 'single',
@@ -485,8 +485,8 @@ test('runResultsJob appends settlement ledger rows in settled order even when th
 
   await appendPostedTrackerEntries(config, [{
     id: 'pick-late',
-    sport: 'mlb',
-    sportLabel: 'MLB',
+    sport: 'nba',
+    sportLabel: 'NBA',
     event: 'Late Game',
     startTime: lateStartTime,
     summary: 'Late Game Under 8.5',
@@ -4919,4 +4919,72 @@ test('runResultsJob backfills missing tracker posts before auto-settling a poste
   assert.equal(settledPick.status, 'win');
   assert.equal(settledPick.returnUnits, 4.8);
   assert.equal(settledPick.netUnits, 2.8);
+});
+
+test('runResultsJob routes MLB settlements to the isolated MLB ledger and never the main bankroll', async (t) => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sportstips-mlb-ledger-'));
+  t.after(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const picksFeedFile = path.join(workspaceRoot, 'automation', 'discord-webhooks', 'picks-feed.json');
+  const mainCsv = path.join(workspaceRoot, 'automation', 'discord-webhooks', 'bot-bankroll-tracker.csv');
+  const mlbCsv = path.join(workspaceRoot, 'automation', 'discord-webhooks', 'bot-bankroll-tracker-mlb.csv');
+  const trackerFile = path.join(workspaceRoot, '30-day-profit-tracker.md');
+  const start = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+
+  const lossLogFile = path.join(workspaceRoot, 'loss-tracking', 'rolling-loss-log.md');
+  await fs.mkdir(path.dirname(picksFeedFile), { recursive: true });
+  await fs.mkdir(path.dirname(lossLogFile), { recursive: true });
+  await fs.writeFile(trackerFile, PROFIT_TRACKER_TEMPLATE);
+  await fs.writeFile(lossLogFile, LOSS_LOG_TEMPLATE);
+  await fs.writeFile(picksFeedFile, JSON.stringify({
+    picks: [
+      { id: 'pick-mlb', status: 'win', sport: 'mlb', sportLabel: 'MLB', league: 'MLB', event: 'MLB Game', summary: 'MLB Game Run Line', betType: 'single', stakeUnits: 1, returnUnits: 2, netUnits: 1, priceDecimal: 2.0, legs: [{ id: 'leg-mlb', label: 'MLB Game Run Line', status: 'win' }], startTime: start, settledAt: start },
+      { id: 'pick-nba', status: 'loss', sport: 'nba', sportLabel: 'NBA', league: 'NBA', event: 'NBA Game', summary: 'NBA Game H2H', betType: 'single', stakeUnits: 1, returnUnits: 0, netUnits: -1, legs: [{ id: 'leg-nba', label: 'NBA Game H2H', status: 'loss' }], startTime: start, settledAt: start }
+    ]
+  }, null, 2));
+
+  const config = {
+    timezone: 'Australia/Sydney',
+    dryRun: true,
+    jobs: { results: { settlementSweepHours: 3 } },
+    sports: [{ key: 'mlb', label: 'MLB' }, { key: 'nba', label: 'NBA' }],
+    bankrollTracker: {
+      enabled: true,
+      csvFile: mainCsv,
+      startingBankrollUnits: 100,
+      unitSizeAud: 10,
+      settlementWebhook: 'unitTracking',
+      summaryWebhook: 'unitReport',
+      rollingWindowDays: 30,
+      repeatLossThreshold: 2,
+      mlb: { csvFile: mlbCsv, startingBankrollUnits: 10, unitSizeAud: 10, settlementWebhook: 'mlbTracking', summaryWebhook: 'mlbReport' }
+    },
+    discord: { username: 'SportsTips', avatarUrl: '', webhooks: { unitTracking: '', mlbTracking: '', results: '' }, roleMentions: { enabled: false, channels: [] } },
+    __paths: { workspaceRoot, picksFeedFile, profitTrackerFile: trackerFile, bankrollTrackerFile: mainCsv }
+  };
+
+  const state = {
+    jobs: {},
+    posts: { slates: {}, picks: { 'pick-mlb': start, 'pick-nba': start }, referrals: {}, results: {} },
+    tracking: { picks: { 'pick-mlb': { postedAt: start, status: 'pregame_recheck_passed' }, 'pick-nba': { postedAt: start, status: 'pregame_recheck_passed' } } }
+  };
+
+  // Seed open positions on the correct ledgers: MLB on the MLB CSV, NBA on the main CSV.
+  await appendPostedTrackerEntries(buildMlbLedgerConfig(config), [{ id: 'pick-mlb', sport: 'mlb', sportLabel: 'MLB', event: 'MLB Game', startTime: start, summary: 'MLB Game Run Line', stakeUnits: 1, source: 'auto-generator', publicationValidation: { totalOdds: 2.0 } }], start);
+  await appendPostedTrackerEntries(config, [{ id: 'pick-nba', sport: 'nba', sportLabel: 'NBA', event: 'NBA Game', startTime: start, summary: 'NBA Game H2H', stakeUnits: 1, source: 'auto-generator', publicationValidation: { totalOdds: 1.9 } }], start);
+
+  const result = await runResultsJob({ config, state, dryRun: true });
+  assert.equal(result.posted, 2);
+
+  const mainCsvText = await fs.readFile(mainCsv, 'utf8');
+  const mlbCsvText = await fs.readFile(mlbCsv, 'utf8');
+
+  // MLB settles on the MLB ledger only — the main bankroll never sees an MLB row.
+  assert.ok(mlbCsvText.includes('settle:pick-mlb'));
+  assert.equal(mainCsvText.includes('pick-mlb'), false);
+  // NBA settles on the main ledger only.
+  assert.ok(mainCsvText.includes('settle:pick-nba'));
+  assert.equal(mlbCsvText.includes('pick-nba'), false);
 });

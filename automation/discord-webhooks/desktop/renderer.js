@@ -34,6 +34,8 @@
   referralWebhookFeedback: document.getElementById('referral-webhook-feedback'),
   webhookUnitTracking: document.getElementById('webhook-unit-tracking'),
   webhookUnitReport: document.getElementById('webhook-unit-report'),
+  webhookMlbTracking: document.getElementById('webhook-mlb-tracking'),
+  webhookMlbReport: document.getElementById('webhook-mlb-report'),
   referralReviewSummary: document.getElementById('referral-review-summary'),
   referralReviewList: document.getElementById('referral-review-list'),
   referralReviewFeedback: document.getElementById('referral-review-feedback'),
@@ -78,6 +80,8 @@
   settingWebhookReferralsMasterlist: document.getElementById('setting-webhook-referrals-masterlist'),
   settingWebhookUnitTracking: document.getElementById('setting-webhook-unit-tracking'),
   settingWebhookUnitReport: document.getElementById('setting-webhook-unit-report'),
+  settingWebhookMlbTracking: document.getElementById('setting-webhook-mlb-tracking'),
+  settingWebhookMlbReport: document.getElementById('setting-webhook-mlb-report'),
   settingWebhookPromoAfl: document.getElementById('setting-webhook-promo-afl'),
   settingWebhookPromoNrl: document.getElementById('setting-webhook-promo-nrl'),
   settingWebhookPromoTennis: document.getElementById('setting-webhook-promo-tennis'),
@@ -619,6 +623,8 @@ function renderSettings(settings) {
   setInputValue(elements.quickWebhookReferralsMasterlist, settings.webhooks?.referralsMasterlist || '');
   elements.settingWebhookUnitTracking.value = settings.webhooks?.unitTracking || '';
   elements.settingWebhookUnitReport.value = settings.webhooks?.unitReport || '';
+  elements.settingWebhookMlbTracking.value = settings.webhooks?.mlbTracking || '';
+  elements.settingWebhookMlbReport.value = settings.webhooks?.mlbReport || '';
   elements.settingWebhookPromoAfl.value = settings.webhooks?.promoAfl || '';
   elements.settingWebhookPromoNrl.value = settings.webhooks?.promoNrl || '';
   elements.settingWebhookPromoTennis.value = settings.webhooks?.promoTennis || '';
@@ -751,6 +757,8 @@ function collectSettings() {
       referralsMasterlist: elements.settingWebhookReferralsMasterlist.value.trim(),
       unitTracking: elements.settingWebhookUnitTracking.value.trim(),
       unitReport: elements.settingWebhookUnitReport.value.trim(),
+      mlbTracking: elements.settingWebhookMlbTracking.value.trim(),
+      mlbReport: elements.settingWebhookMlbReport.value.trim(),
       promoAfl: elements.settingWebhookPromoAfl.value.trim(),
       promoNrl: elements.settingWebhookPromoNrl.value.trim(),
       promoTennis: elements.settingWebhookPromoTennis.value.trim(),
@@ -824,6 +832,8 @@ function render(status) {
   setWebhookState(elements.webhookReferralsMasterlist, status.webhookConfigured?.referralsMasterlist);
   setWebhookState(elements.webhookUnitTracking, status.webhookConfigured?.unitTracking);
   setWebhookState(elements.webhookUnitReport, status.webhookConfigured?.unitReport);
+  setWebhookState(elements.webhookMlbTracking, status.webhookConfigured?.mlbTracking);
+  setWebhookState(elements.webhookMlbReport, status.webhookConfigured?.mlbReport);
   renderReferralReview(status.referralReview);
   renderReferralPlan(status.referralPlan);
 
@@ -1167,6 +1177,8 @@ for (const input of [
   elements.settingWebhookPicksOther,
   elements.settingWebhookUnitTracking,
   elements.settingWebhookUnitReport,
+  elements.settingWebhookMlbTracking,
+  elements.settingWebhookMlbReport,
   elements.settingWebhookPromoAfl,
   elements.settingWebhookPromoNrl,
   elements.settingWebhookPromoTennis,
