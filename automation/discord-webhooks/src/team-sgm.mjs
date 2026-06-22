@@ -47,6 +47,12 @@ const SGM_MIN_TOTAL_ODDS = 2.0;
 // A genuine favourite only. Above this the h2h is essentially a coin-flip and the
 // structure loses its edge, so we decline rather than force it (props become the fallback).
 const FAVOURITE_MAX_H2H = 1.80;
+// The WIN-OUTRIGHT (h2h) market is only a SAFE leg when the favourite is a genuine lock
+// (~70%+). Above this price the h2h is too close to a coin-flip to anchor a "safe" slip, so
+// it is dropped from the leg pool entirely (the SGM still builds from lines/safe-totals/props,
+// or NO-BETs). The favourite can still be up to FAVOURITE_MAX_H2H — it just won't contribute
+// an h2h leg, only its modelled lines. (User 2026-06-22: "H2H only for strong favourites.")
+const H2H_LEG_MAX_PRICE = 1.40;
 // Keep the anchor line genuinely safe (cover probability band) while still letting it
 // carry enough price to reach the 2x floor.
 const ANCHOR_MIN_COVER = 0.80;
@@ -73,9 +79,14 @@ const SUPPORTED_PROP_MAX_WINPROB = 0.92;
 // main total. The main over/under is variance/weather-driven, so we treat it as RISKY:
 // its win probability is penalised for SAFETY ranking, making it a last resort behind a
 // safe alternate total, a line, or supported props.
+// NRL was 9 — far too confident: real NRL game totals swing ~13-15 points, so a model at
+// sigma 9 priced Over ~44.5 (off a 48.5 main) as "68% safe" when it is really a coin-flip.
+// The user repeatedly flagged "NRL overs are too high for a safe bet" — raising sigma widens
+// the cushion so the modelled safe Over lands genuinely low (Over ~30) / Under genuinely high
+// (Under ~65/70), matching how the user actually plays the range.
 const TOTAL_SIGMA_BY_SPORT = {
   afl: 28,
-  nrl: 9,
+  nrl: 14,
   nba: 18,
   nfl: 10,
   nhl: 2
@@ -87,6 +98,13 @@ const DEFAULT_TOTAL_SIGMA = 12;
 // ~1.04 pad — anchored on the main line/total (which already reflects the teams' expected
 // margin/scoring). The optimiser then picks the point that lands the safest 2x slip.
 const ALT_COVER_TARGETS = [0.68, 0.80, 0.92];
+// TOTALS need a HIGHER safety bar than lines. A favourite covering a small head-start line at
+// 68% is genuinely safe (it just has to roughly win), but an over/under at 68% is a real
+// coin-flip — totals are variance/weather driven. So the modelled safe total is only ever
+// offered at a comfortable cushion (≥80% cover), never the near-even rung. This is what stops
+// the optimiser from reaching for a too-high Over to scrape the slip up to 2x (it must use a
+// genuinely safe total + props instead, or NO-BET). (User 2026-06-22.)
+const ALT_TOTAL_COVER_TARGETS = [0.80, 0.88, 0.94];
 // A near-certain line at/above this cover is a "pad" (the user's "max line" that acts as a
 // 2-leg): it sits in its OWN group so it can pad an h2h, while still never stacking with
 // another live favourite leg.
@@ -378,10 +396,17 @@ export function buildTeamSgm(eventContext, quotes, options = {}) {
   // than one of them (so e.g. an h2h and a line are never both in, which would mean both legs
   // miss together if the favourite loses). We do NOT add the scraped "main line" (a favourite
   // -X handicap): it is a negative line (the user never backs those) and a coin-flip.
-  legPool.push({
-    kind: 'h2h', group: 'fav-cover', market: 'h2h', outcomeName: favouriteTeam, point: null,
-    odds: roundTo(favourite.price, 2), winProb: 1 / favourite.price, onTab: true, source: 'web-scrape'
-  });
+  //
+  // The h2h (win outright) leg is ONLY added for a STRONG favourite (price ≤ H2H_LEG_MAX_PRICE,
+  // a ~70%+ lock). For a softer favourite (1.40–1.80) the h2h is too coin-flip to be a "safe"
+  // leg, so it is dropped — the slip is built from the modelled lines, safe totals and props,
+  // or NO-BETs. (User 2026-06-22: "H2H only for strong favourites.")
+  if (favourite.price <= H2H_LEG_MAX_PRICE) {
+    legPool.push({
+      kind: 'h2h', group: 'fav-cover', market: 'h2h', outcomeName: favouriteTeam, point: null,
+      odds: roundTo(favourite.price, 2), winProb: 1 / favourite.price, onTab: true, source: 'web-scrape'
+    });
+  }
 
   // Modelled alternate FAVOURITE LINES (head start +L) across a range of safety levels — a
   // moderate ~1.33 stacking line up to a near-certain ~1.04 pad. All sit in the 'fav-cover'
@@ -424,7 +449,7 @@ export function buildTeamSgm(eventContext, quotes, options = {}) {
   if (mainTotalPoint !== null) {
     const sigmaTotal = TOTAL_SIGMA_BY_SPORT[normalizeText(sportKey).split(' ')[0]] || DEFAULT_TOTAL_SIGMA;
     const seenTotals = new Set();
-    for (const cover of ALT_COVER_TARGETS) {
+    for (const cover of ALT_TOTAL_COVER_TARGETS) {
       const cushion = sigmaTotal * invNormal(cover);
       const price = anchorPriceForCover(cover);
       const overPoint = Math.round((mainTotalPoint - cushion) * 2) / 2;

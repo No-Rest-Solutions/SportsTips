@@ -34,14 +34,14 @@ function aflQuotes() {
 }
 
 // A supported player-prop candidate, shaped like a gated pool candidate.
-function makeProp(player, line, price) {
+function makeProp(player, line, price, market = 'player_disposals', statLabel = 'Disposals') {
   return {
     candidateId: `prop-${player.replace(/\s+/g, '')}-${line}`,
     key: `prop:${player}:${line}`,
-    label: `${player} ${line}+ Disposals`,
-    market: 'player_disposals',
+    label: `${player} ${line}+ ${statLabel}`,
+    market,
     family: 'prop',
-    outcomeName: `${line}+ Disposals`,
+    outcomeName: `${line}+ ${statLabel}`,
     description: player,
     point: null,
     booksChecked: 1,
@@ -78,18 +78,12 @@ test('isTeamSgmSport covers the named team sports only', () => {
   assert.equal(isTeamSgmSport('tennis_atp'), false);
 });
 
-test('no props: uses a near-certain SAFE total, never the coin-flip main over/under', () => {
-  const sgm = buildTeamSgm(aflContext(), aflQuotes(), {});
-  assert.ok(sgm);
-  assert.equal(sgm.favouriteTeam, 'Fremantle');
-  // The coin-flip main total (176.5) is risky — it must NOT appear; a modelled safe total does.
-  assert.ok(kinds(sgm).includes('safetotal'), 'a near-certain safe total is used');
-  assert.ok(!sgm.legs.some((leg) => leg.kind === 'total'), 'the coin-flip main total is not used');
-  const totalLeg = sgm.legs.find((leg) => leg.market === 'totals');
-  assert.notEqual(totalLeg.point, 176.5, 'total leg is a safer alternate point, not the main line');
-  assert.ok(sgm.modeledOdds >= 2.0);
-  const product = sgm.legs.reduce((p, leg) => p * leg.odds, 1);
-  assert.ok(Math.abs(product - sgm.modeledOdds) < 0.02, 'modelled odds == product of leg prices');
+test('no props: declines — safe team markets alone cannot reach a safe 2x', () => {
+  // With no supported props, the only safe legs are h2h (≤1.40) + a near-certain pad line
+  // (~1.04) + a genuinely safe total (≥0.80 cover, ~1.17). Those top out ~1.70x — well under
+  // the 2x floor — and the builder will NOT reach for a risky over/h2h to scrape over the line.
+  // So it declines. A safe 2x needs evidence-backed props to anchor it.
+  assert.equal(buildTeamSgm(aflContext(), aflQuotes(), {}), null);
 });
 
 test('never stacks two legs from the same correlation group (no fake 2x)', () => {
@@ -131,16 +125,31 @@ test('builds from safe legs (props / safe total), never the coin-flip total', ()
   assert.ok(sgm.modeledOdds >= 2.0);
 });
 
-test('no props (mid favourite): builds the h2h + max-line pad + safe-total structure', () => {
-  // Fremantle ~1.40: h2h + safe total alone = ~1.97 < 2x, so the near-certain max-line pad
-  // (the user's "max line that acts as a 2-leg") pushes it over 2x — h2h + max line + total.
-  const sgm = buildTeamSgm(aflContext(), aflQuotes(), {});
-  assert.ok(sgm);
-  assert.ok(sgm.legs.some((leg) => leg.kind === 'h2h'), 'has the h2h');
-  const pad = sgm.legs.find((leg) => leg.kind === 'maxline');
-  assert.ok(pad && pad.point > 0 && pad.source === 'model', 'has the modelled positive max-line pad');
-  assert.ok(sgm.legs.some((leg) => leg.kind === 'safetotal'), 'has a safe total');
-  assert.ok(sgm.modeledOdds >= 2.0);
+test('h2h (win-outright) leg only joins the slip for a STRONG favourite (<=1.40)', () => {
+  // Strong favourite (1.30) + one supported prop: the h2h is a genuine ~77% lock, so it is a
+  // safe leg and anchors the slip (h2h 1.30 x prop = 2x).
+  const strongQuotes = [
+    q({ market: 'h2h', outcomeName: 'Fremantle', price: 1.30 }),
+    q({ market: 'h2h', outcomeName: 'Geelong Cats', price: 3.40 }),
+    q({ market: 'spreads', outcomeName: 'Fremantle', point: -24.5, price: 1.90 }),
+    q({ market: 'totals', outcomeName: 'Over', point: 176.5, price: 1.91 }),
+    q({ market: 'totals', outcomeName: 'Under', point: 176.5, price: 1.89 })
+  ];
+  const strong = buildTeamSgm(aflContext(), strongQuotes, { supportedFillers: [makeProp('P1', 20, 1.55)] });
+  assert.ok(strong && strong.legs.some((leg) => leg.kind === 'h2h'), 'strong favourite uses the h2h leg');
+
+  // Mid favourite (1.55 > 1.40): the h2h is too coin-flip to be "safe", so it is NEVER a leg —
+  // the slip is built from props (here two of them) instead.
+  const midQuotes = [
+    q({ market: 'h2h', outcomeName: 'Fremantle', price: 1.55 }),
+    q({ market: 'h2h', outcomeName: 'Geelong Cats', price: 2.45 }),
+    q({ market: 'spreads', outcomeName: 'Fremantle', point: -10.5, price: 1.90 }),
+    q({ market: 'totals', outcomeName: 'Over', point: 176.5, price: 1.91 }),
+    q({ market: 'totals', outcomeName: 'Under', point: 176.5, price: 1.89 })
+  ];
+  const mid = buildTeamSgm(aflContext(), midQuotes, { supportedFillers: [makeProp('P1', 20, 1.55), makeProp('P2', 20, 1.45)] });
+  assert.ok(mid, 'mid favourite still builds from props');
+  assert.ok(!mid.legs.some((leg) => leg.kind === 'h2h'), 'mid favourite never uses the h2h leg');
 });
 
 test('never puts two lines (same market) in one slip — e.g. +0.5 AND +32.5', () => {
@@ -192,8 +201,10 @@ test('declines when nothing safe can reach 2x (no total, no props)', () => {
 });
 
 test('respects an explicit total lean for the safe total side', () => {
-  const over = buildTeamSgm(aflContext(), aflQuotes(), { totalLean: 'over' });
-  const under = buildTeamSgm(aflContext(), aflQuotes(), { totalLean: 'under' });
+  // One short prop leaves the slip needing a safe total to clear 2x, so the lean fixes its side.
+  const fillers = [makeProp('P1', 20, 1.25)];
+  const over = buildTeamSgm(aflContext(), aflQuotes(), { supportedFillers: fillers, totalLean: 'over' });
+  const under = buildTeamSgm(aflContext(), aflQuotes(), { supportedFillers: fillers, totalLean: 'under' });
   const overTotal = over.legs.find((leg) => leg.market === 'totals');
   const underTotal = under.legs.find((leg) => leg.market === 'totals');
   assert.equal(overTotal.outcomeName, 'Over');
@@ -201,7 +212,7 @@ test('respects an explicit total lean for the safe total side', () => {
 });
 
 test('decision builds a real pick through the standard pipeline', () => {
-  const result = buildTeamSgmDecision(aflContext(), aflQuotes(), {});
+  const result = buildTeamSgmDecision(aflContext(), aflQuotes(), { supportedFillers: [makeProp('Caleb Serong', 25, 1.45)] });
   assert.ok(result, 'a decision should be produced');
   assert.equal(result.decision.qualifies, true);
   assert.ok(result.decision.selectedLegs.length >= 2);
@@ -233,8 +244,9 @@ test('decision puts a supported prop in the pick in place of the total', () => {
 test('SGM pick clears the publication validators, incl. the modelled legs', async () => {
   const { validateLegPublication, validateGeneratedTotalOddsProfile, validateLivePricing } = picksTestables;
 
-  // No-props pick = h2h + modelled max-line pad + modelled safe total.
-  const result = buildTeamSgmDecision(aflContext(), aflQuotes(), {});
+  // h2h (strong fav) + one short prop still needs a modelled safe total to clear 2x, so the
+  // pick carries a modelled leg that must survive live-price revalidation as locked.
+  const result = buildTeamSgmDecision(aflContext(), aflQuotes(), { supportedFillers: [makeProp('Caleb Serong', 25, 1.30)] });
   const pick = buildPickFromAnalysisDecision(aflContext(), result.candidatePool, result.decision);
   assert.equal(pick.teamSgm, true);
   assert.equal(pick.betType, 'sgm');
@@ -272,11 +284,18 @@ test('NRL uses a tighter margin model and still builds a safe 2x slip', () => {
     nrlQ({ market: 'totals', outcomeName: 'Over', point: 49.5, price: 1.9 }),
     nrlQ({ market: 'totals', outcomeName: 'Under', point: 49.5, price: 1.9 })
   ];
-  const sgm = buildTeamSgm(ctx, quotes, {});
+  // Penrith 1.50 is a mid favourite (>1.40) so no h2h leg — two supported points props anchor it.
+  const sgm = buildTeamSgm(ctx, quotes, {
+    supportedFillers: [
+      makeProp('Nathan Cleary', 18, 1.45, 'player_points', 'Points'),
+      makeProp('Brian To’o', 12, 1.42, 'player_points', 'Points')
+    ]
+  });
   assert.ok(sgm);
+  assert.ok(!sgm.legs.some((leg) => leg.kind === 'h2h'), 'mid favourite gets no h2h leg');
   assert.ok(sgm.modeledOdds >= 2.0);
   assert.ok(sgm.legs.length <= 3, 'NRL slip stays within its 3-leg budget');
-  // NRL margin sigma is much smaller than AFL, so the modelled lines are far shorter.
+  // NRL margin sigma is much smaller than AFL, so any modelled line is far shorter.
   const line = sgm.legs.find((leg) => leg.kind === 'maxline');
   if (line) assert.ok(line.point <= 32.5, 'NRL line within the realistic cap');
 });

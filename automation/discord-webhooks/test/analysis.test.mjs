@@ -1382,16 +1382,32 @@ test('runAnalysisJob persists matched ESPN event metadata onto generated picks',
     }
   };
   const startTime = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+  // Player-prop quotes (event-page shape) so the candidate pool is non-empty. Without supported
+  // evidence the team SGM correctly declines (a prop-less strong favourite cannot reach a safe
+  // 2x from team markets alone), so generation falls through to the analyzeEvent path below —
+  // which is what this metadata test exercises.
+  const prop = (player, point, price) => ({
+    sportKey: 'nba', homeTeam: 'Oklahoma City Thunder', awayTeam: 'San Antonio Spurs',
+    displayName: 'San Antonio Spurs vs Oklahoma City Thunder', startTime,
+    market: 'player_points', outcomeName: `Over ${point}`, description: player, point,
+    source: 'web-scrape', sourceUrl: 'https://www.sportsbet.com.au/betting/basketball-us/nba/spurs-v-thunder-1',
+    prices: [{ bookmakerKey: 'sportsbet-web', bookmakerTitle: 'Sportsbet Web', price }]
+  });
   const snapshot = {
     updatedAt: new Date().toISOString(),
-    quotes: parseFeaturedMarketsFromText({
-      sportKey: 'nba',
-      displayName: 'San Antonio Spurs vs Oklahoma City Thunder',
-      startTime,
-      sourceUrl: 'https://www.sportsbet.com.au/betting/basketball-us/nba/spurs-v-thunder-1',
-      fetchedAt: new Date().toISOString(),
-      text: 'San Antonio Spurs Oklahoma City Thunder Head to Head 3.10 1.40 Total Match Points Over (O 215.5) 1.90 Under (U 215.5) 1.90 Shai Gilgeous-Alexander Points Over 29.5 1.90 Under 29.5 1.90'
-    })
+    quotes: [
+      ...parseFeaturedMarketsFromText({
+        sportKey: 'nba',
+        displayName: 'San Antonio Spurs vs Oklahoma City Thunder',
+        startTime,
+        sourceUrl: 'https://www.sportsbet.com.au/betting/basketball-us/nba/spurs-v-thunder-1',
+        fetchedAt: new Date().toISOString(),
+        text: 'San Antonio Spurs Oklahoma City Thunder Head to Head 3.10 1.40 Total Match Points Over (O 215.5) 1.90 Under (U 215.5) 1.90'
+      }),
+      prop('Shai Gilgeous-Alexander', 29.5, 1.90),
+      prop('Victor Wembanyama', 19.5, 1.90),
+      prop('Chet Holmgren', 17.5, 1.90)
+    ]
   };
 
   await runAnalysisJob({ config, state, dryRun: true }, {
